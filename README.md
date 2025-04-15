@@ -1,46 +1,28 @@
 
-# 🐥 SIKO Teploměr (ESP32 + DS18B20 + OTA + Web UI)
+# 🌡️ IT Teploměr ESP32
 
-## 🔥 Funkce:
-- Měření teploty pomocí DS18B20 (GPIO 4)
-- HTML UI: hodiny, hvězdné datum, graf 24h, meme obrázky
-- REST API:
-  - `/api/temp`, `/api/history`, `/api/status`, `/api/meme`
-  - `/api/setcomfort` – změna komfortních teplot a kalibrace
-  - `/api/update` – ruční OTA aktualizace (HTTP OTA)
+Tento projekt je chytrý teploměr běžící na ESP32 s webovým rozhraním, REST API a podporou OTA aktualizací.
 
-## ⚙️ Nastavení přes `secrets.h`
-```cpp
-#define WIFI_SSID "..."
-#define WIFI_PASSWORD "..."
-#define GITHUB_USER "marek9336"
-#define GITHUB_REPO "SIKO_teplomer"
-#define GITHUB_BASE_URL "https://" GITHUB_USER ".github.io/" GITHUB_REPO "/Pictures/"
-#define OTA_URL "https://marek9336.github.io/SIKO_teplomer/firmware/latest.bin"
-```
+## 📦 Funkce
+- Měření teploty přes DS18B20
+- Webový dashboard (`/`) s hodinami, grafem, meme obrázkem
+- API pro získání a nastavení hodnot (`/api/config`, `/api/temp`, `/api/history`, atd.)
+- OTA aktualizace z URL nebo souboru (`/api/update`, `/update`)
+- Webová správa na `/settings`
 
-## 🛠️ Webová administrace – `/settings`
-Zde lze nastavit:
-- Kalibraci
-- Komfortní rozmezí teplot
-- OTA URL
-- (volitelně přidat SSID, heslo)
+## 🔧 API přehled
+- `GET /api/config` – aktuální konfigurace
+- `POST /api/config` – změna kalibrace, comfort min/max, interval, délka historie, atd.
+- `POST /api/update` – stáhne firmware z URL
+- `POST /api/clearhistory` – smaže historii
+- `GET /api/temp`, `/api/meme`, `/api/status`, `/api/history`
 
-## 🧠 Logika meme obrázků:
-- `zima_1/2/3.png` – podle míry chladu
-- `horko_1/2/3.png` – podle míry horka
-- `ok_1.png` – komfortní zóna
-- `error.png` – chyba čidla / odpojený kabel
+## 🧪 OTA Update
+- `Sketch > Export compiled binary` v Arduino IDE
+- Nahraj na GitHub nebo jiný hosting
+- Zadej URL do `/settings` nebo použij PowerShell
 
-## 🖥️ PowerShell
-```powershell
-$response = Invoke-RestMethod -Uri "http://IP_ESP/api/temp"
-$status = Invoke-RestMethod -Uri "http://IP_ESP/api/status"
-Write-Host "Teplota: $($response.temperature) °C (Kalibrace: $($response.calibration))"
-Write-Host "Verze: $($status.version)"
-```
+## 📂 PowerShell
+Soubor `get-full-info.ps1` umožní získat a nastavit vše přes API pohodlně z terminálu.
 
-## 📡 OTA aktualizace
-- Firmware si ESP32 stáhne z `OTA_URL`, pokud je novější verze.
-- Lze spustit ručně přes `/api/update`.
-
+Více info: [https://github.com/marek9336/SIKO_teplomer](https://github.com/marek9336/SIKO_teplomer)

@@ -7,36 +7,6 @@
 #include "secrets.h"
 #include <ArduinoJson.h>
 
-#define THERMISTOR_PIN 2
-const float seriesResistor = 10000.0;
-const float nominalResistance = 10000.0;
-const float nominalTemperature = 25.0;
-const float bCoefficient = 3950.0;
-const int adcMax = 4095;
-bool useNTC = true;
-
-float readNTCTemperature() {
-  int analogValue = analogRead(THERMISTOR_PIN);
-  const float vRef = 3.3;
-  float voltage = ((float)analogValue / adcMax) * vRef;
-  float resistance = (voltage * seriesResistor) / (vRef - voltage);
-  if (resistance <= 0) {
-    Serial.println("[NTC] Warning: invalid resistance");
-    return -999.0;
-  }
-  float steinhart;
-  steinhart = resistance / nominalResistance;     // (R/Ro)
-  steinhart = log(steinhart);                     // ln(R/Ro)
-  steinhart /= bCoefficient;                      // 1/B * ln(R/Ro)
-  steinhart += 1.0 / (nominalTemperature + 273.15); // + (1/To)
-  steinhart = 1.0 / steinhart;                    // Invert
-  float celsius = steinhart - 273.15;             // Convert to °C
-  Serial.print("[NTC] Raw analog: "); Serial.println(analogValue);
-  Serial.print("[NTC] Calculated °C: "); Serial.println(celsius);
-  return celsius;
-}
-
-
 #define ONE_WIRE_BUS 4
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -54,7 +24,6 @@ int historyIndex = 0;
 #define EEPROM_COMFORT_MIN 0
 #define EEPROM_COMFORT_MAX 4
 #define EEPROM_CALIBRATION 8
-#define EEPROM_SENSOR_TYPE 12
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head>
@@ -109,7 +78,7 @@ setInterval(updateClock, 1000); updateClock();
 async function updateData() {
   try {
     const t = await fetch("/api/temp").then(r => r.json());
-    document.getElementById("temperature").innerText = (t.temperature !== undefined && !isNaN(t.temperature)) ? t.temperature.toFixed(1) : '--';
+    document.getElementById("temperature").innerText = t.temperature.toFixed(1);
     const m = await fetch("/api/meme").then(r => r.json());
     document.getElementById("meme").src = m.meme;
     const h = await fetch("/api/history").then(r => r.json());
@@ -172,33 +141,28 @@ function drawChart(data) {
 )rawliteral";
 
 void saveComfortToEEPROM() {
-  EEPROM.write(EEPROM_SENSOR_TYPE, useNTC ? 1 : 0);
   EEPROM.put(EEPROM_COMFORT_MIN, comfortMin);
   EEPROM.put(EEPROM_COMFORT_MAX, comfortMax);
   EEPROM.put(EEPROM_CALIBRATION, calibration);
   EEPROM.commit();
 }
 void loadComfortFromEEPROM() {
-  useNTC = EEPROM.read(EEPROM_SENSOR_TYPE) == 1;
   EEPROM.get(EEPROM_COMFORT_MIN, comfortMin);
   EEPROM.get(EEPROM_COMFORT_MAX, comfortMax);
   EEPROM.get(EEPROM_CALIBRATION, calibration);
 }
-
 void readTemperature() {
-  float rawTemp;
-  if (useNTC) {
-    rawTemp = readNTCTemperature();
-  } else {
-    sensors.requestTemperatures();
-    rawTemp = sensors.getTempCByIndex(0);
-  }
-
-  if (rawTemp != DEVICE_DISCONNECTED_C && rawTemp > -100.0 && rawTemp < 100.0) {
-    temperature = rawTemp + calibration;
-  }
+  sensors.requestTemperatures();
+  float rawTemp = sensors.getTempCByIndex(0);
+  temperature = (rawTemp != DEVICE_DISCONNECTED_C) ? rawTemp + calibration : -999;
+  if (rawTemp != DEVICE_DISCONNECTED_C && rawTemp > -100) {
+  temperature = rawTemp + calibration;
+  lastValidTemperature = temperature;
+} else {
+  temperature = lastValidTemperature; // fallback
 }
 
+}
 String selectMemeURL() {
   if (temperature == -999) return String(GITHUB_BASE_URL) + "error.png";
   if (temperature < comfortMin - 2) return String(GITHUB_BASE_URL) + "zima_3.png";
@@ -211,11 +175,8 @@ String selectMemeURL() {
 }
 void handleTemp() {
   StaticJsonDocument<100> doc;
-  int analogRaw = useNTC ? analogRead(THERMISTOR_PIN) : -1;
-  doc["temperature"] = isnan(temperature) ? -999.0 : temperature;
+  doc["temperature"] = temperature;
   doc["calibration"] = calibration;
-  doc["sensorType"] = useNTC ? "ntc" : "ds18b20";
-  doc["analogRaw"] = analogRaw;
   String json; serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
@@ -229,14 +190,12 @@ void handleHistory() {
 
 }
 void handleStatus() {
-  int analogRaw = analogRead(THERMISTOR_PIN);
   StaticJsonDocument<200> doc;
   doc["uptime"] = millis() / 1000;
   doc["version"] = "v2.0";
   doc["comfortMin"] = comfortMin;
   doc["comfortMax"] = comfortMax;
   doc["calibration"] = calibration;
-  doc["sensorType"] = useNTC ? "ntc" : "ds18b20";
   String json; serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
@@ -254,25 +213,6 @@ void handleSetComfort() {
     comfortMin = doc["comfortMin"] | comfortMin;
     comfortMax = doc["comfortMax"] | comfortMax;
     calibration = doc["calibration"] | calibration;
-    String type = doc["sensorType"] | "ds18b20";
-    useNTC = (type == "ntc");
-    saveComfortToEEPROM();
-    server.send(200, "application/json", "{\"status\":\"updated\"}");
-  } else {
-    server.send(405, "application/json", "{\"error\":\"Method Not Allowed\"}");
-  }
-}
-
-void handleSetConfig() {
-  if (server.method() == HTTP_POST) {
-    StaticJsonDocument<200> doc;
-    DeserializationError err = deserializeJson(doc, server.arg("plain"));
-    if (err) return server.send(400, "application/json", "{\"error\":\"Bad JSON\"}");
-    comfortMin = doc["comfortMin"] | comfortMin;
-    comfortMax = doc["comfortMax"] | comfortMax;
-    calibration = doc["calibration"] | calibration;
-    String type = doc["sensorType"] | (useNTC ? "ntc" : "ds18b20");
-    useNTC = (type == "ntc");
     saveComfortToEEPROM();
     server.send(200, "application/json", "{\"status\":\"updated\"}");
   } else {
@@ -311,7 +251,6 @@ void setup() {
   server.on("/api/temp", handleTemp);
   server.on("/api/history", handleHistory);
   server.on("/api/status", handleStatus);
-  server.on("/api/config", HTTP_POST, handleSetConfig);
   server.on("/api/meme", handleMeme);
   server.on("/api/setcomfort", handleSetComfort);
   
@@ -334,7 +273,6 @@ server.on("/settings", HTTP_GET, []() {
   <label>Last Valid Temp: <input type="number" step="0.1" name="lastValidTemperature"></label>
   <label>Délka historie (hod): <select name="historyLength">
     <option value="24">24</option><option value="48">48</option></select></label>
-<label>Typ čidla: <select name="sensorType"><option value="ds18b20">DS18B20</option><option value="ntc">NTC (analog)</option></select></label>
   <label>Interval záznamu (min): <select name="historyInterval">
     <option value="15">15</option><option value="30">30</option><option value="60">60</option></select></label>
   <label>OTA URL: <input type="text" name="ota_url" style="width:90%;"></label>
@@ -380,23 +318,8 @@ function runOTA(){
   server.begin();
 }
 void loop() {
-  static unsigned long lastConsoleLog = 0;
   server.handleClient();
-  if (millis() - lastConsoleLog > 5000) {
-    float rawTemp;
-    if (useNTC) {
-      int analogValue = analogRead(THERMISTOR_PIN);
-      Serial.print("[NTC] Raw analog: "); Serial.print(analogValue);
-      rawTemp = readNTCTemperature();
-    } else {
-      sensors.requestTemperatures();
-      rawTemp = sensors.getTempCByIndex(0);
-      Serial.print("[DS18B20] Raw: "); Serial.print(rawTemp);
-    }
-    Serial.print(" | Calibrated: "); Serial.println(rawTemp + calibration);
-    lastConsoleLog = millis();
-  }
-  if (millis() - lastUpdateTime > 5000) {
+  if (millis() - lastUpdateTime > 900000) {
     readTemperature();
     history[historyIndex] = temperature;
     historyIndex = (historyIndex + 1) % 288;
