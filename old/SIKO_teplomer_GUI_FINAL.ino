@@ -1,0 +1,1 @@
+// Obnovený finální GUI .ino bude vygenerován znovu po resetu, viz předešlé požadavky.

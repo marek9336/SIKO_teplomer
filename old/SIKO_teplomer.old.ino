@@ -1,3 +1,4 @@
+// Tento soubor obsahuje HTML GUI verzi
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -12,7 +13,6 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 WebServer server(80);
 
-float lastValidTemperature = 0.0;
 float temperature = 0.0;
 float calibration = 0.0;
 float comfortMin = 21.0;
@@ -24,50 +24,6 @@ int historyIndex = 0;
 #define EEPROM_COMFORT_MIN 0
 #define EEPROM_COMFORT_MAX 4
 #define EEPROM_CALIBRATION 8
-
-const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE HTML><html><head>
-<meta charset="UTF-8"><title>SIKO Teploměr</title>
-<style>
-body { background-color: #1e1e1e; color: #f0f0f0; font-family: Arial; text-align: center; }
-h1 { margin-top: 20px; } #clock, #stardate { font-size: 1em; } #temperature { font-size: 2.5em; color: #00d1b2; }
-#meme { max-width: 90%; margin-top: 20px; border-radius: 10px; } canvas { max-width: 100%; background: #2a2a2a; margin-top: 20px; }
-</style></head><body>
-<h1>SIKO Teploměr 🐥</h1>
-<div id="clock"></div><div id="stardate"></div>
-<div>Teplota: <span id="temperature">--</span> °C</div>
-<img id="meme" src="" alt="Meme obrázek"><canvas id="graph" width="400" height="200"></canvas>
-<script>
-function updateClock() {
- const now = new Date();
- document.getElementById("clock").innerText = now.toLocaleString("cs-CZ");
- const stardate = (now.getFullYear() - 2000) * 1000 + now.getMonth() * 83 + now.getDate();
- document.getElementById("stardate").innerText = "Hvězdné datum: " + stardate;
-}
-setInterval(updateClock, 1000); updateClock();
-async function updateData() {
- try {
-   const t = await fetch("/api/temp").then(r => r.json());
-   document.getElementById("temperature").innerText = t.temperature.toFixed(1);
-   const m = await fetch("/api/meme").then(r => r.json());
-   document.getElementById("meme").src = m.meme;
-   const h = await fetch("/api/history").then(r => r.json());
-   drawChart(h);
- } catch (e) { console.error("Chyba:", e); }
-}
-setInterval(updateData, 5000); updateData();
-function drawChart(data) {
- const c = document.getElementById("graph"), ctx = c.getContext("2d");
- ctx.clearRect(0, 0, c.width, c.height);
- ctx.strokeStyle = "#00d1b2"; ctx.beginPath();
- const sx = c.width / data.length, sy = c.height / 50;
- data.forEach((t, i) => {
-   const x = i * sx, y = c.height - (t * sy);
-   i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
- }); ctx.stroke();
-}
-</script></body></html>
-)rawliteral";
 
 void saveComfortToEEPROM() {
   EEPROM.put(EEPROM_COMFORT_MIN, comfortMin);
@@ -83,37 +39,33 @@ void loadComfortFromEEPROM() {
 void readTemperature() {
   sensors.requestTemperatures();
   float rawTemp = sensors.getTempCByIndex(0);
-  temperature = (rawTemp != DEVICE_DISCONNECTED_C) ? rawTemp + calibration : -999;
-  if (rawTemp != DEVICE_DISCONNECTED_C && rawTemp > -100) {
-  temperature = rawTemp + calibration;
-  lastValidTemperature = temperature;
-} else {
-  temperature = lastValidTemperature; // fallback
-}
-
+  if (rawTemp != DEVICE_DISCONNECTED_C) {
+    temperature = rawTemp + calibration;
+  }
 }
 String selectMemeURL() {
-  if (temperature == -999) return String(GITHUB_BASE_URL) + "error.png";
-  if (temperature < comfortMin - 2) return String(GITHUB_BASE_URL) + "zima_3.png";
-  if (temperature < comfortMin) return String(GITHUB_BASE_URL) + "zima_2.png";
-  if (temperature < comfortMin + 0.5) return String(GITHUB_BASE_URL) + "zima_1.png";
-  if (temperature > comfortMax + 2) return String(GITHUB_BASE_URL) + "horko_3.png";
-  if (temperature > comfortMax) return String(GITHUB_BASE_URL) + "horko_2.png";
-  if (temperature > comfortMax - 0.5) return String(GITHUB_BASE_URL) + "horko_1.png";
-  return String(GITHUB_BASE_URL) + "ok_1.png";
+  if (temperature < comfortMin - 2) return "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/main/Pictures/zima_3.png";
+  if (temperature < comfortMin) return "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/main/Pictures/zima_2.png";
+  if (temperature < comfortMin + 0.5) return "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/main/Pictures/zima_1.png";
+  if (temperature > comfortMax + 2) return "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/main/Pictures/horko_3.png";
+  if (temperature > comfortMax) return "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/main/Pictures/horko_2.png";
+  if (temperature > comfortMax - 0.5) return "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/main/Pictures/horko_1.png";
+  return "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/main/Pictures/ok_1.png";
 }
 void handleTemp() {
   StaticJsonDocument<100> doc;
   doc["temperature"] = temperature;
   doc["calibration"] = calibration;
-  String json; serializeJson(doc, json);
+  String json;
+  serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
 void handleHistory() {
   StaticJsonDocument<1500> doc;
   JsonArray arr = doc.to<JsonArray>();
   for (int i = 0; i < 288; i++) arr.add(history[i]);
-  String json; serializeJson(doc, json);
+  String json;
+  serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
 void handleStatus() {
@@ -123,20 +75,22 @@ void handleStatus() {
   doc["comfortMin"] = comfortMin;
   doc["comfortMax"] = comfortMax;
   doc["calibration"] = calibration;
-  String json; serializeJson(doc, json);
+  String json;
+  serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
 void handleMeme() {
   StaticJsonDocument<200> doc;
   doc["meme"] = selectMemeURL();
-  String json; serializeJson(doc, json);
+  String json;
+  serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
 void handleSetComfort() {
   if (server.method() == HTTP_POST) {
     StaticJsonDocument<200> doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
-    if (err) return server.send(400, "application/json", "{\"error\":\"Bad JSON\"}");
+    if (err) { server.send(400, "application/json", "{\"error\":\"Bad JSON\"}"); return; }
     comfortMin = doc["comfortMin"] | comfortMin;
     comfortMax = doc["comfortMax"] | comfortMax;
     calibration = doc["calibration"] | calibration;
@@ -146,6 +100,7 @@ void handleSetComfort() {
     server.send(405, "application/json", "{\"error\":\"Method Not Allowed\"}");
   }
 }
+
 void setup() {
   Serial.begin(115200);
   EEPROM.begin(16);
@@ -154,11 +109,13 @@ void setup() {
   readTemperature();
 
   WiFi.setHostname("ESP32_Temp");
+  
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500); Serial.print(".");
+    delay(500);
+    Serial.print(".");
   }
-  Serial.println("\nWiFi připojeno!");
+  Serial.println("WiFi připojeno!");
   Serial.print("ESP IP adresa: ");
   Serial.println(WiFi.localIP());
   Serial.print("ESP MAC adresa: ");
@@ -173,15 +130,20 @@ void setup() {
   Serial.println(WiFi.BSSIDstr());
   Serial.print("ESP channel: ");
   Serial.println(WiFi.channel());
-  
-  server.on("/", []() { server.send_P(200, "text/html", index_html); });
+
   server.on("/api/temp", handleTemp);
   server.on("/api/history", handleHistory);
   server.on("/api/status", handleStatus);
   server.on("/api/meme", handleMeme);
   server.on("/api/setcomfort", handleSetComfort);
+
+  server.on("/", []() {
+    server.send_P(200, "text/html", index_html);
+  });
+
   server.begin();
 }
+
 void loop() {
   server.handleClient();
   if (millis() - lastUpdateTime > 300000) {

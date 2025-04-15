@@ -1,5 +1,5 @@
-
-$response = Invoke-RestMethod -Uri "http://IP_ESP/api/temp"
-$status = Invoke-RestMethod -Uri "http://IP_ESP/api/status"
+$IP_ESP = "192.168.1.161"
+$response = Invoke-RestMethod -Uri "http://$IP_ESP/api/temp"
+$status = Invoke-RestMethod -Uri "http://$IP_ESP/api/status"
 Write-Host "Teplota: $($response.temperature) °C (Kalibrace: $($response.calibration))"
 Write-Host "Verze: $($status.version)"
