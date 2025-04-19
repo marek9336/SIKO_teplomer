@@ -14,6 +14,10 @@ const float bCoefficient = 3950.0;
 const int adcMax = 4095;
 bool useNTC = true;
 
+#ifndef GITHUB_BASE_URL
+#define GITHUB_BASE_URL "https://mareknap.github.io/SIKO_teplomer/Pictures/"
+#endif
+
 float readNTCTemperature() {
   int analogValue = analogRead(THERMISTOR_PIN);
   const float vRef = 3.3;
@@ -24,12 +28,12 @@ float readNTCTemperature() {
     return -999.0;
   }
   float steinhart;
-  steinhart = resistance / nominalResistance;     // (R/Ro)
-  steinhart = log(steinhart);                     // ln(R/Ro)
-  steinhart /= bCoefficient;                      // 1/B * ln(R/Ro)
-  steinhart += 1.0 / (nominalTemperature + 273.15); // + (1/To)
-  steinhart = 1.0 / steinhart;                    // Invert
-  float celsius = steinhart - 273.15;             // Convert to °C
+  steinhart = resistance / nominalResistance;
+  steinhart = log(steinhart);
+  steinhart /= bCoefficient;
+  steinhart += 1.0 / (nominalTemperature + 273.15);
+  steinhart = 1.0 / steinhart;
+  float celsius = steinhart - 273.15;
   Serial.print("[NTC] Raw analog: "); Serial.println(analogValue);
   Serial.print("[NTC] Calculated °C: "); Serial.println(celsius);
   return celsius;
@@ -53,6 +57,32 @@ int historyIndex = 0;
 #define EEPROM_COMFORT_MAX 4
 #define EEPROM_CALIBRATION 8
 #define EEPROM_SENSOR_TYPE 12
+
+String selectMemeURL() {
+  float temp = temperature;
+
+  Serial.print("[DEBUG] Temp: "); Serial.println(temp);
+  Serial.print("[DEBUG] ComfortMin: "); Serial.println(comfortMin);
+  Serial.print("[DEBUG] ComfortMax: "); Serial.println(comfortMax);
+
+  if (isnan(temp) || temp <= -999) {
+    return String(GITHUB_BASE_URL) + "error.png";
+  } else if (temp < (comfortMin - 2.0)) {
+    return String(GITHUB_BASE_URL) + "zima_3.png";
+  } else if (temp < (comfortMin - 1.0)) {
+    return String(GITHUB_BASE_URL) + "zima_2.png";
+  } else if (temp < comfortMin) {
+    return String(GITHUB_BASE_URL) + "zima_1.png";
+  } else if (temp > (comfortMax + 2.0)) {
+    return String(GITHUB_BASE_URL) + "horko_3.png";
+  } else if (temp > (comfortMax + 1.0)) {
+    return String(GITHUB_BASE_URL) + "horko_2.png";
+  } else if (temp > comfortMax) {
+    return String(GITHUB_BASE_URL) + "horko_1.png";
+  } else {
+    return String(GITHUB_BASE_URL) + "ok_1.png";
+  }
+}
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head>
@@ -194,7 +224,6 @@ function drawChart(data) {
 </script></body></html>
 )rawliteral";
 
-
 void saveComfortToEEPROM() {
   EEPROM.write(EEPROM_SENSOR_TYPE, useNTC ? 1 : 0);
   EEPROM.put(EEPROM_COMFORT_MIN, comfortMin);
@@ -207,6 +236,14 @@ void loadComfortFromEEPROM() {
   EEPROM.get(EEPROM_COMFORT_MIN, comfortMin);
   EEPROM.get(EEPROM_COMFORT_MAX, comfortMax);
   EEPROM.get(EEPROM_CALIBRATION, calibration);
+
+  if (isnan(comfortMin) || comfortMin < 5 || comfortMin > 50) comfortMin = 21.0;
+  if (isnan(comfortMax) || comfortMax < 5 || comfortMax > 50) comfortMax = 24.0;
+  if (isnan(calibration)) calibration = 0.0;
+
+  Serial.print("[EEPROM] comfortMin: "); Serial.println(comfortMin);
+  Serial.print("[EEPROM] comfortMax: "); Serial.println(comfortMax);
+  Serial.print("[EEPROM] calibration: "); Serial.println(calibration);
 }
 
 void readTemperature() {
@@ -223,16 +260,6 @@ void readTemperature() {
   }
 }
 
-String selectMemeURL() {
-  if (temperature == -999) return String(GITHUB_BASE_URL) + "error.png";
-  if (temperature < comfortMin - 2) return String(GITHUB_BASE_URL) + "zima_3.png";
-  if (temperature < comfortMin) return String(GITHUB_BASE_URL) + "zima_2.png";
-  if (temperature < comfortMin + 0.5) return String(GITHUB_BASE_URL) + "zima_1.png";
-  if (temperature > comfortMax + 2) return String(GITHUB_BASE_URL) + "horko_3.png";
-  if (temperature > comfortMax) return String(GITHUB_BASE_URL) + "horko_2.png";
-  if (temperature > comfortMax - 0.5) return String(GITHUB_BASE_URL) + "horko_1.png";
-  return String(GITHUB_BASE_URL) + "ok_1.png";
-}
 void handleTemp() {
   StaticJsonDocument<100> doc;
   int analogRaw = useNTC ? analogRead(THERMISTOR_PIN) : -1;
