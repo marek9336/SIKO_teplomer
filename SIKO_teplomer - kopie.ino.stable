@@ -1,3 +1,4 @@
+
 #include <WiFi.h>
 #include <WebServer.h>
 #include <EEPROM.h>
@@ -34,6 +35,7 @@ float readNTCTemperature() {
   Serial.print("[NTC] Calculated °C: "); Serial.println(celsius);
   return celsius;
 }
+
 
 #define ONE_WIRE_BUS 4
 OneWire oneWire(ONE_WIRE_BUS);
@@ -81,8 +83,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     border-radius: 10px;
   }
   #graph {
-    width: calc(100% - 20px);
-    height: auto;
+    max-width: 100%;
     background: #2a2a2a;
     margin: 20px auto;
     display: block;
@@ -93,7 +94,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 <div id="clock"></div>
 <div id="stardate"></div>
 <div>Teplota: <span id="temperature">--</span> °C</div>
-<canvas id="graph" width="800" height="300"></canvas>
+<canvas id="graph" width="400" height="200"></canvas>
 <img id="meme" src="" alt="Meme obrázek">
 
 <script>
@@ -115,85 +116,60 @@ async function updateData() {
     drawChart(h);
   } catch (e) { console.error("Chyba:", e); }
 }
-setInterval(updateData, 5000); updateData();
+setInterval(updateData, 30000); updateData();
 
 function drawChart(data) {
   const c = document.getElementById("graph");
   const ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
 
-  // ✅ Získáme pouze reálná data
-  const filtered = data.filter(n => n !== 0 && !isNaN(n) && n > -100);
-  if (filtered.length < 2) return;
-
-  // ✅ Vypočítáme minimální a maximální hodnoty
-  const minTemp = Math.floor(Math.min(...filtered));
-  const maxTemp = Math.ceil(Math.max(...filtered));
+  // dynamická osa Y
+  const minTemp = Math.floor(Math.min(...data));
+  const maxTemp = Math.ceil(Math.max(...data));
   const padding = 1;
   const yMin = minTemp - padding;
   const yMax = maxTemp + padding;
   const yRange = yMax - yMin;
 
-  // 🎨 Kreslíme vodorovné čáry a popisky teploty (osa Y)
+  // Pozadí a čáry
   ctx.strokeStyle = "#444";
-  ctx.fillStyle = "#aaa";
-  ctx.font = "14px Arial";
-  ctx.textAlign = "left";
-  const yStep = Math.ceil(yRange / 6);
-
-  for (let y = yMin; y <= yMax; y += yStep) {
-    const yPos = c.height - ((y - yMin) / yRange) * c.height;
-    ctx.beginPath();
+  ctx.beginPath();
+  for (let y = yMin; y <= yMax; y += 1) {
+    const yPos = c.height - (y - yMin) * (c.height / yRange);
     ctx.moveTo(0, yPos);
     ctx.lineTo(c.width, yPos);
-    ctx.stroke();
-    ctx.fillText(y + "°C", 5, yPos - 5);
   }
+  ctx.stroke();
 
-  // 📈 Kreslíme teplotní křivku
+  // Graf
   ctx.strokeStyle = "#00d1b2";
   ctx.beginPath();
-  const sx = c.width / (filtered.length - 1);
-  filtered.forEach((t, i) => {
+  const sx = c.width / data.length;
+  data.forEach((t, i) => {
     const x = i * sx;
-    const y = c.height - ((t - yMin) / yRange) * c.height;
-    if (!isNaN(y)) {
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
+    const y = c.height - (t - yMin) * (c.height / yRange);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   });
   ctx.stroke();
 
-  // 🕒 Osa X – časové značky
-  const now = new Date();
+  // Osy
   ctx.fillStyle = "#aaa";
+  ctx.font = "12px Arial";
+  for (let y = yMin; y <= yMax; y += 1) {
+    const yPos = c.height - (y - yMin) * (c.height / yRange);
+    ctx.fillText(y + "°C", 5, yPos - 2);
+  }
+
+  const now = new Date();
   ctx.textAlign = "center";
-
-  let labelStep;
-  if (filtered.length <= 60) labelStep = 5;         // každých 5 sekund
-  else if (filtered.length <= 720) labelStep = 60;  // každých 5 minut
-  else labelStep = 180;                             // každé 3 hodiny
-
-  for (let i = 0; i < filtered.length; i += labelStep) {
-    const past = new Date(now.getTime() - (filtered.length - 1 - i) * 5 * 1000);
-    let label = "";
-
-    if (filtered.length <= 60) {
-      label = past.getSeconds().toString().padStart(2, "0") + "s";
-    } else if (filtered.length <= 720) {
-      label = past.getHours().toString().padStart(2, "0") + ":" +
-              past.getMinutes().toString().padStart(2, "0");
-    } else {
-      label = past.getHours().toString().padStart(2, "0") + ":00";
-    }
-
-    const x = i * sx;
-    ctx.fillText(label, x, c.height - 5);
+  for (let h = 0; h < 48; h += 4) {
+    const hourLabel = new Date(now.getTime() - (48 - h) * 3600000);
+    const x = h * (c.width / 48);
+    ctx.fillText(hourLabel.getHours() + ":00", x, c.height - 5);
   }
 }
-
 </script></body></html>
 )rawliteral";
-
 
 void saveComfortToEEPROM() {
   EEPROM.write(EEPROM_SENSOR_TYPE, useNTC ? 1 : 0);
