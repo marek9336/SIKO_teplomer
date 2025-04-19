@@ -283,7 +283,7 @@ void handleStatus() {
   int analogRaw = analogRead(THERMISTOR_PIN);
   StaticJsonDocument<200> doc;
   doc["uptime"] = millis() / 1000;
-  doc["version"] = "v2.0";
+  doc["version"] = "v2.2";
   doc["comfortMin"] = comfortMin;
   doc["comfortMax"] = comfortMax;
   doc["calibration"] = calibration;
@@ -365,9 +365,6 @@ void setup() {
   server.on("/api/config", HTTP_POST, handleSetConfig);
   server.on("/api/meme", handleMeme);
   server.on("/api/setcomfort", handleSetComfort);
-  
-
-
   
 server.on("/settings", HTTP_GET, []() {
   String html = R"rawliteral(
