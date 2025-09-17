@@ -17,6 +17,13 @@ const float bCoefficient = 3950.0;
 const int adcMax = 4095;
 bool useNTC = true;
 
+// --- 1min průměr pro zobrazení/API ---
+float minuteSum = 0.0;
+int   minuteSamples = 0;
+unsigned long lastMinuteCommit = 0;
+float minuteAvgTemp = NAN;   // tohle se bude posílat přes API a zobrazovat
+
+
 #ifndef GITHUB_BASE_URL
 #define GITHUB_BASE_URL "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/Pictures/"
 #endif
@@ -81,7 +88,7 @@ String cachedQuote = "";
 #define EEPROM_SENSOR_TYPE 12
 
 String selectMemeURL() {
-  float temp = temperature;
+  float temp = minuteAvgTemp;
 
   Serial.print("Teplota: "); Serial.println(temp);
 
@@ -142,11 +149,11 @@ const char index_html[] PROGMEM = R"rawliteral(
 
 <img id="meme" src="" alt="Meme obrázek">
 
-<div id="btc">BTC: <span id="btc_usd">--</span> USD <br> <span id="btc_czk">--</span> CZK</div>
+<div id="btc">₿TC: <span id="btc_usd">--</span> USD <br> <span id="btc_czk">--</span> CZK</div>
 <div id="citace">„…načítám citaci…“</div>
 
 <div id="countdown" style="margin: 8px 0; font-size: 0.9em; color:#ddd;">
-  ⏳ Odpočet do zahájení voleb: …
+  Volby budou za: …
 </div>
 
 
@@ -350,7 +357,7 @@ void pushHistory(float v) {
 void handleTemp() {
   StaticJsonDocument<160> doc;
   int analogRaw = useNTC ? analogRead(THERMISTOR_PIN) : -1;
-  doc["temperature"] = isnan(temperature) ? -999.0 : temperature;
+  doc["temperature"] = isnan(minuteAvgTemp) ? -999.0 : minuteAvgTemp;
   doc["calibration"] = calibration;
   doc["sensorType"] = useNTC ? "ntc" : "ds18b20";
   doc["analogRaw"] = analogRaw;
@@ -521,6 +528,8 @@ void setup() {
   sensors.begin();
   loadComfortFromEEPROM();
   readTemperature();
+  minuteAvgTemp = temperature;      // do prvního commit-u ukaž aktuální
+  lastMinuteCommit = millis();      // start 1min okna
 
   WiFi.setHostname("ESP32_Temp_IT");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -624,6 +633,22 @@ void loop() {
 
   // Čteme každou vteřinu
   readTemperature();
+  // Každou vteřinu přičti validní vzorek do min. okna
+  if (!isnan(temperature) && temperature > -100.0 && temperature < 100.0) {
+    minuteSum += temperature;
+    minuteSamples++;
+  }
+
+  // Každých 60 s zveřejni průměr poslední minuty
+  if (millis() - lastMinuteCommit >= 60000UL) {
+    if (minuteSamples > 0) {
+      minuteAvgTemp = minuteSum / minuteSamples;
+    }
+    // reset okna
+    minuteSum = 0.0;
+    minuteSamples = 0;
+    lastMinuteCommit = millis();
+  }
 
   // Uložíme do 5-průměr bufferu
   if (!isnan(temperature) && temperature > -100.0 && temperature < 100.0) {
