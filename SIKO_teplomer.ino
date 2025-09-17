@@ -5,6 +5,9 @@
 #include <DallasTemperature.h>
 #include "secrets.h"
 #include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <math.h>
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -15,8 +18,12 @@ const int adcMax = 4095;
 bool useNTC = true;
 
 #ifndef GITHUB_BASE_URL
-#define GITHUB_BASE_URL "https://mareknap.github.io/SIKO_teplomer/Pictures/"
+#define GITHUB_BASE_URL "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/Pictures/"
 #endif
+
+// --- Nové: URL pro ceny a citace ---
+const char* COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,czk";
+const char* CITACE_URL    = "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/citace.txt";
 
 float readNTCTemperature() {
   int analogValue = analogRead(THERMISTOR_PIN);
@@ -24,7 +31,7 @@ float readNTCTemperature() {
   float voltage = ((float)analogValue / adcMax) * vRef;
   float resistance = (voltage * seriesResistor) / (vRef - voltage);
   if (resistance <= 0) {
-    Serial.println("[NTC] Warning: invalid resistance");
+    Serial.println("[NTC] Varování, chyba odporu");
     return -999.0;
   }
   float steinhart;
@@ -35,7 +42,7 @@ float readNTCTemperature() {
   steinhart = 1.0 / steinhart;
   float celsius = steinhart - 273.15;
   Serial.print("[NTC] Raw analog: "); Serial.println(analogValue);
-  Serial.print("[NTC] Calculated °C: "); Serial.println(celsius);
+  Serial.print("[NTC] Vypočítáno °C: "); Serial.println(celsius);
   return celsius;
 }
 
@@ -50,9 +57,24 @@ float calibration = 0.0;
 float comfortMin = 21.0;
 float comfortMax = 24.0;
 unsigned long lastUpdateTime = 0;
-float history[192];
+
+// --- Historie (oprava na 288) ---
+#define HISTORY_SIZE 288
+float history[HISTORY_SIZE];
 int historyIndex = 0;
 
+// --- Průměrování 5 měření ---
+float avgBuf[5];
+int   avgCount = 0;
+
+// --- Cache pro BTC & citace (aby se to zbytečně nevolalo moc často) ---
+unsigned long lastBTCFetch = 0;
+float btcUSD = NAN, btcCZK = NAN;
+
+unsigned long lastQuoteFetch = 0;
+String cachedQuote = "";
+
+// --- EEPROM ---
 #define EEPROM_COMFORT_MIN 0
 #define EEPROM_COMFORT_MAX 4
 #define EEPROM_CALIBRATION 8
@@ -61,9 +83,7 @@ int historyIndex = 0;
 String selectMemeURL() {
   float temp = temperature;
 
-  Serial.print("[DEBUG] Temp: "); Serial.println(temp);
-  Serial.print("[DEBUG] ComfortMin: "); Serial.println(comfortMin);
-  Serial.print("[DEBUG] ComfortMax: "); Serial.println(comfortMax);
+  Serial.print("Teplota: "); Serial.println(temp);
 
   if (isnan(temp) || temp <= -999) {
     return String(GITHUB_BASE_URL) + "error.png";
@@ -84,9 +104,10 @@ String selectMemeURL() {
   }
 }
 
+// --- HTML ---
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head>
-<meta charset="UTF-8"><title>IT Teploměr 🐥</title>
+<meta charset="UTF-8"><title>IT teploměr 🐥</title>
 <style>
   body {
     background-color: #1e1e1e;
@@ -96,35 +117,33 @@ const char index_html[] PROGMEM = R"rawliteral(
     margin: 0; padding: 0;
     font-size: 1.8em;
   }
-  h1 {
-    margin-top: 20px;
-    font-size: 2.5em;
-  }
-  #temperature {
-    font-size: 2.5em;
-    color: #00d1b2;
-  }
+  h1 { margin-top: 20px; font-size: 2.5em; }
+  #temperature { font-size: 2.5em; color: #00d1b2; }
   #meme {
     max-width: 100%;
-    max-height: calc(100vh - 400px);
-    margin-top: 10px;
-    border-radius: 10px;
+    max-height: calc(100vh - 520px);
+    margin-top: 10px; border-radius: 10px;
   }
   #graph {
     width: calc(100% - 20px);
-    height: auto;
-    background: #2a2a2a;
-    margin: 20px auto;
-    display: block;
+    height: auto; background: #2a2a2a;
+    margin: 20px auto; display: block;
   }
+  #btc, #citace { margin: 8px 0; font-size: 0.9em; color:#ddd; }
 </style>
 </head><body>
-<h1 style="font-size:2em; font-weight:bold;">IT Teploměr <a href='/settings' style='text-decoration:none;'>🐥</a></h1>
-<div id="clock"></div>
+<h1 style="font-size:2em; font-weight:bold;">IT teploměr <a href='/settings' style='text-decoration:none;'>🐥</a></h1>
 <div id="stardate"></div>
+<div id="clock"></div>
+<div id="internetTime"></div>
+<div id="obed"></div>
 <div>Teplota: <span id="temperature">--</span> °C</div>
 <canvas id="graph" width="800" height="300"></canvas>
+
 <img id="meme" src="" alt="Meme obrázek">
+
+<div id="btc">BTC: <span id="btc_usd">--</span> USD <br> <span id="btc_czk">--</span> CZK</div>
+<div id="citace">„…načítám citaci…“</div>
 
 <script>
 function updateClock() {
@@ -132,6 +151,11 @@ function updateClock() {
   document.getElementById("clock").innerText = now.toLocaleString("cs-CZ");
   const stardate = (now.getFullYear() - 2000) * 1000 + now.getMonth() * 83 + now.getDate();
   document.getElementById("stardate").innerText = "Hvězdné datum: " + stardate;
+  const utc = now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
+  const bmt = utc + 1;
+  const beat = Math.floor((bmt * 1000) / 24) % 1000;
+  document.getElementById("internetTime").innerText = "Internetový čas: " + beat.toString().padStart(3, '0') + " beatů";
+  document.getElementById("obed").innerText = "Oběd je ve 485 beatech";
 }
 setInterval(updateClock, 1000); updateClock();
 
@@ -139,24 +163,46 @@ async function updateData() {
   try {
     const t = await fetch("/api/temp").then(r => r.json());
     document.getElementById("temperature").innerText = (t.temperature !== undefined && !isNaN(t.temperature)) ? t.temperature.toFixed(1) : '--';
+
     const m = await fetch("/api/meme").then(r => r.json());
     document.getElementById("meme").src = m.meme;
+
     const h = await fetch("/api/history").then(r => r.json());
     drawChart(h);
+
   } catch (e) { console.error("Chyba:", e); }
 }
 setInterval(updateData, 5000); updateData();
+
+async function updateBTC() {
+  try {
+    const p = await fetch("/api/btc").then(r => r.json());
+    if (p && p.usd && p.czk) {
+      document.getElementById("btc_usd").innerText = Number(p.usd).toLocaleString("en-US", {maximumFractionDigits:0});
+      document.getElementById("btc_czk").innerText = Number(p.czk).toLocaleString("cs-CZ", {maximumFractionDigits:0});
+    }
+  } catch(e){ console.error(e); }
+}
+setInterval(updateBTC, 3600000); updateBTC(); // 1 hodina
+
+async function updateCitace() {
+  try {
+    const res = await fetch("/api/citace").then(r => r.json());
+    if (res && res.quote) {
+      document.getElementById("citace").innerText = "„" + res.quote + "“";
+    }
+  } catch(e){ console.error(e); }
+}
+setInterval(updateCitace, 3600000); updateCitace(); // 1 hodina
 
 function drawChart(data) {
   const c = document.getElementById("graph");
   const ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
 
-  // ✅ Získáme pouze reálná data
   const filtered = data.filter(n => n !== 0 && !isNaN(n) && n > -100);
   if (filtered.length < 2) return;
 
-  // ✅ Vypočítáme minimální a maximální hodnoty
   const minTemp = Math.floor(Math.min(...filtered));
   const maxTemp = Math.ceil(Math.max(...filtered));
   const padding = 1;
@@ -164,7 +210,6 @@ function drawChart(data) {
   const yMax = maxTemp + padding;
   const yRange = yMax - yMin;
 
-  // 🎨 Kreslíme vodorovné čáry a popisky teploty (osa Y)
   ctx.strokeStyle = "#444";
   ctx.fillStyle = "#aaa";
   ctx.font = "14px Arial";
@@ -180,7 +225,6 @@ function drawChart(data) {
     ctx.fillText(y + "°C", 5, yPos - 5);
   }
 
-  // 📈 Kreslíme teplotní křivku
   ctx.strokeStyle = "#00d1b2";
   ctx.beginPath();
   const sx = c.width / (filtered.length - 1);
@@ -193,15 +237,14 @@ function drawChart(data) {
   });
   ctx.stroke();
 
-  // 🕒 Osa X – časové značky
   const now = new Date();
   ctx.fillStyle = "#aaa";
   ctx.textAlign = "center";
 
   let labelStep;
-  if (filtered.length <= 60) labelStep = 5;         // každých 5 sekund
-  else if (filtered.length <= 720) labelStep = 60;  // každých 5 minut
-  else labelStep = 180;                             // každé 3 hodiny
+  if (filtered.length <= 60) labelStep = 5;
+  else if (filtered.length <= 720) labelStep = 60;
+  else labelStep = 180;
 
   for (let i = 0; i < filtered.length; i += labelStep) {
     const past = new Date(now.getTime() - (filtered.length - 1 - i) * 5 * 1000);
@@ -215,15 +258,14 @@ function drawChart(data) {
     } else {
       label = past.getHours().toString().padStart(2, "0") + ":00";
     }
-
     const x = i * sx;
     ctx.fillText(label, x, c.height - 5);
   }
 }
-
 </script></body></html>
 )rawliteral";
 
+// --- EEPROM ---
 void saveComfortToEEPROM() {
   EEPROM.write(EEPROM_SENSOR_TYPE, useNTC ? 1 : 0);
   EEPROM.put(EEPROM_COMFORT_MIN, comfortMin);
@@ -246,6 +288,7 @@ void loadComfortFromEEPROM() {
   Serial.print("[EEPROM] calibration: "); Serial.println(calibration);
 }
 
+// --- Čtení teploty ---
 void readTemperature() {
   float rawTemp;
   if (useNTC) {
@@ -254,14 +297,20 @@ void readTemperature() {
     sensors.requestTemperatures();
     rawTemp = sensors.getTempCByIndex(0);
   }
-
   if (rawTemp != DEVICE_DISCONNECTED_C && rawTemp > -100.0 && rawTemp < 100.0) {
     temperature = rawTemp + calibration;
   }
 }
 
+// --- Helper: kruhové přidání do historie (chronologicky) ---
+void pushHistory(float v) {
+  history[historyIndex] = v;
+  historyIndex = (historyIndex + 1) % HISTORY_SIZE;
+}
+
+// --- API handlery ---
 void handleTemp() {
-  StaticJsonDocument<100> doc;
+  StaticJsonDocument<160> doc;
   int analogRaw = useNTC ? analogRead(THERMISTOR_PIN) : -1;
   doc["temperature"] = isnan(temperature) ? -999.0 : temperature;
   doc["calibration"] = calibration;
@@ -272,18 +321,21 @@ void handleTemp() {
 }
 
 void handleHistory() {
-  StaticJsonDocument<3000> doc;
+  StaticJsonDocument<4096> doc;
   JsonArray arr = doc.to<JsonArray>();
-  for (int i = 0; i < 192; i += 2) arr.add(history[i]);
+  // Vrátíme chronologicky: nejstarší → nejnovější
+  for (int i = 0; i < HISTORY_SIZE; i++) {
+    int idx = (historyIndex + i) % HISTORY_SIZE;
+    arr.add(history[idx]);
+  }
   String json; serializeJson(doc, json);
   server.send(200, "application/json", json);
-
 }
+
 void handleStatus() {
-  int analogRaw = analogRead(THERMISTOR_PIN);
-  StaticJsonDocument<200> doc;
+  StaticJsonDocument<240> doc;
   doc["uptime"] = millis() / 1000;
-  doc["version"] = "v2.2";
+  doc["version"] = "v2.3-btc-citace";
   doc["comfortMin"] = comfortMin;
   doc["comfortMax"] = comfortMax;
   doc["calibration"] = calibration;
@@ -291,12 +343,14 @@ void handleStatus() {
   String json; serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
+
 void handleMeme() {
   StaticJsonDocument<200> doc;
   doc["meme"] = selectMemeURL();
   String json; serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
+
 void handleSetComfort() {
   if (server.method() == HTTP_POST) {
     StaticJsonDocument<200> doc;
@@ -330,6 +384,99 @@ void handleSetConfig() {
     server.send(405, "application/json", "{\"error\":\"Method Not Allowed\"}");
   }
 }
+
+// --- HTTPS fetch helper (bez certifikátu pro jednoduchost) ---
+bool httpsGET(const char* url, String &payload) {
+  WiFiClientSecure client;
+  client.setTimeout(12000);
+  client.setInsecure(); // pokud chceš pevný cert, můžeme doplnit root CA
+  HTTPClient https;
+  if (!https.begin(client, url)) return false;
+  int code = https.GET();
+  if (code == 200) {
+    payload = https.getString();
+    https.end();
+    return true;
+  }
+  https.end();
+  return false;
+}
+
+// --- BTC ceny (cache 60 s) ---
+void handleBTC() {
+  unsigned long now = millis();
+  if (now - lastBTCFetch > 3600000 || isnan(btcUSD) || isnan(btcCZK)) {
+    String body;
+    if (httpsGET(COINGECKO_URL, body)) {
+      StaticJsonDocument<512> doc;
+      DeserializationError err = deserializeJson(doc, body);
+      if (!err) {
+        btcUSD = doc["bitcoin"]["usd"] | NAN;
+        btcCZK = doc["bitcoin"]["czk"] | NAN;
+        lastBTCFetch = now;
+      }
+    }
+  }
+  StaticJsonDocument<128> out;
+  if (!isnan(btcUSD)) out["usd"] = btcUSD;
+  if (!isnan(btcCZK)) out["czk"] = btcCZK;
+  out["age_ms"] = (int)(millis() - lastBTCFetch);
+  String json; serializeJson(out, json);
+  server.send(200, "application/json", json);
+}
+
+// --- Citace (cache 60 s; náhodná řádka) ---
+void handleCitace() {
+  unsigned long now = millis();
+  if (now - lastQuoteFetch > 3600000 || cachedQuote.length() == 0) {
+    String txt;
+    if (httpsGET(CITACE_URL, txt)) {
+      // Normalizace konců řádků na '\n'
+      txt.replace("\r\n", "\n");
+      txt.replace('\r', '\n');
+
+      int n = txt.length();
+      // Spočítat počet řádků (počet \n + 1 pokud není prázdné)
+      int lines = 0;
+      if (n > 0) {
+        lines = 1;
+        for (int i = 0; i < n; i++) if (txt[i] == '\n') lines++;
+      }
+
+      if (lines <= 0) {
+        cachedQuote = "(soubor prázdný)";
+      } else {
+        // Náhodný výběr řádku
+        randomSeed(esp_random() ^ now);
+        int pick = random(0, lines);
+
+        int lineIdx = 0;
+        int prev = 0;
+        for (int i = 0; i <= n; i++) {
+          if (i == n || txt[i] == '\n') {
+            if (lineIdx == pick) {
+              String line = txt.substring(prev, i);
+              line.trim();
+              if (line.length() == 0) line = "(prázdná řádka)";
+              cachedQuote = line;
+              break;
+            }
+            lineIdx++;
+            prev = i + 1;
+          }
+        }
+      }
+      lastQuoteFetch = now;
+    }
+  }
+
+  StaticJsonDocument<256> out;
+  out["quote"] = cachedQuote.length() ? cachedQuote : String("Bez citace");
+  String json; serializeJson(out, json);
+  server.send(200, "application/json", json);
+}
+
+
 void setup() {
   Serial.begin(115200);
   EEPROM.begin(16);
@@ -337,27 +484,25 @@ void setup() {
   loadComfortFromEEPROM();
   readTemperature();
 
-  WiFi.setHostname("ESP32_Temp");
+  WiFi.setHostname("ESP32_Temp_IT");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500); Serial.print(".");
   }
   Serial.println("\nWiFi připojeno!");
-  Serial.print("ESP IP adresa: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("ESP MAC adresa: ");
-  Serial.println(WiFi.macAddress());
-  Serial.print("ESP hostname: ");
-  Serial.println(WiFi.getHostname());
-  Serial.print("ESP SSID: ");
-  Serial.println(WiFi.SSID());
-  Serial.print("ESP RSSI: ");
-  Serial.println(WiFi.RSSI());
-  Serial.print("ESP BSSID: ");
-  Serial.println(WiFi.BSSIDstr());
-  Serial.print("ESP channel: ");
-  Serial.println(WiFi.channel());
-  
+  Serial.print("ESP MAC adresa: "); Serial.println(WiFi.macAddress());
+  Serial.print("ESP hostname: "); Serial.println(WiFi.getHostname());
+  Serial.print("ESP SSID: "); Serial.println(WiFi.SSID());
+  Serial.print("ESP RSSI: "); Serial.println(WiFi.RSSI());
+  Serial.print("ESP BSSID: "); Serial.println(WiFi.BSSIDstr());
+  Serial.print("ESP channel: "); Serial.println(WiFi.channel());
+  Serial.print("ComfortMin: "); Serial.println(comfortMin);
+  Serial.print("ComfortMax: "); Serial.println(comfortMax);
+  Serial.print("ESP IP adresa: "); Serial.println(WiFi.localIP());
+
+  // Inicializace historie
+  for (int i=0;i<HISTORY_SIZE;i++) history[i] = NAN;
+
   server.on("/", []() { server.send_P(200, "text/html", index_html); });
   server.on("/api/temp", handleTemp);
   server.on("/api/history", handleHistory);
@@ -365,9 +510,14 @@ void setup() {
   server.on("/api/config", HTTP_POST, handleSetConfig);
   server.on("/api/meme", handleMeme);
   server.on("/api/setcomfort", handleSetComfort);
-  
-server.on("/settings", HTTP_GET, []() {
-  String html = R"rawliteral(
+
+  // Nové endpointy:
+  server.on("/api/btc", handleBTC);
+  server.on("/api/citace", handleCitace);
+
+  // Stávající /settings beze změny:
+  server.on("/settings", HTTP_GET, []() {
+    String html = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset='UTF-8'><title>Nastavení</title>
 <style>
   body { background:#1e1e1e; color:#fff; font-family:sans-serif; text-align:center; }
@@ -376,16 +526,17 @@ server.on("/settings", HTTP_GET, []() {
 </style></head><body>
 <h1><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
 <form id="settingsForm">
-  <label>Comfort Min: <input type="number" step="0.1" name="comfortMin"></label>
-  <label>Comfort Max: <input type="number" step="0.1" name="comfortMax"></label>
+  <label>Komfort Min: <input type="number" step="0.1" name="comfortMin"></label>
+  <label>Komfort Max: <input type="number" step="0.1" name="comfortMax"></label>
   <label>Kalibrace: <input type="number" step="0.1" name="calibration"></label>
-  <label>Last Valid Temp: <input type="number" step="0.1" name="lastValidTemperature"></label>
+  <label>Prvotní teplota (Nepoužívat): <input type="number" step="0.1" name="lastValidTemperature"></label>
   <label>Délka historie (hod): <select name="historyLength">
     <option value="24">24</option><option value="48">48</option></select></label>
-<label>Typ čidla: <select name="sensorType"><option value="ds18b20">DS18B20</option><option value="ntc">NTC (analog)</option></select></label>
+  <label>Typ čidla: (Vyber vždy analog) <select name="sensorType">
+    <option value="ds18b20">DS18B20</option><option value="ntc">NTC (analog)</option></select></label>
   <label>Interval záznamu (min): <select name="historyInterval">
     <option value="15">15</option><option value="30">30</option><option value="60">60</option></select></label>
-  <label>OTA URL: <input type="text" name="ota_url" style="width:90%;"></label>
+  <label>OTA URL: nepoužívat<input type="text" name="ota_url" style="width:90%;"></label>
   <br>
   <button type="submit">💾 Uložit změny</button>
   <button type="button" onclick="clearHistory()">🗑️ Smazat historii</button>
@@ -393,7 +544,7 @@ server.on("/settings", HTTP_GET, []() {
 </form>
 <br><hr><br>
 <form method="POST" action="/update" enctype="multipart/form-data">
-  <label>📂 OTA soubor (.bin): <input type="file" name="update"></label><br>
+  <label> 📂 nepoužívat OTA soubor (.bin): <input type="file" name="update"></label><br>
   <input type="submit" value="Nahrát a aktualizovat">
 </form>
 <script>
@@ -414,7 +565,8 @@ document.getElementById("settingsForm").addEventListener("submit", function(e){
   }).then(() => alert("Uloženo!"));
 });
 function clearHistory(){
-  fetch("/api/clearhistory", { method:"POST" }).then(() => alert("Historie smazána"));
+  // případně přidej endpoint /api/clearhistory
+  alert("Endpoint clearhistory není implementován.");
 }
 function runOTA(){
   fetch("/api/update", { method:"POST" }).then(() => alert("Spouštím OTA aktualizaci..."));
@@ -422,32 +574,60 @@ function runOTA(){
 </script>
 </body></html>
 )rawliteral";
-  server.send(200, "text/html", html);
-});
+    server.send(200, "text/html", html);
+  });
 
   server.begin();
 }
+
 void loop() {
   static unsigned long lastConsoleLog = 0;
   server.handleClient();
+
+  // Čteme každou vteřinu
+  readTemperature();
+
+  // Uložíme do 5-průměr bufferu
+  if (!isnan(temperature) && temperature > -100.0 && temperature < 100.0) {
+    if (avgCount < 5) {
+      avgBuf[avgCount++] = temperature;
+    } else {
+      // posuneme okno: šoupnout doleva (není to nejefektivnější, ale jednoduché)
+      for (int i=1;i<5;i++) avgBuf[i-1] = avgBuf[i];
+      avgBuf[4] = temperature;
+    }
+  }
+
+  // každých ~5 s uložit průměr 5 posledních měření do historie
+  if (millis() - lastUpdateTime > 5000) {
+    if (avgCount > 0) {
+      float sum = 0;
+      for (int i=0;i<avgCount;i++) sum += avgBuf[i];
+      float avg = sum / avgCount;
+      pushHistory(avg);
+      // vyprázdnit pro další okno
+      avgCount = 0;
+    } else {
+      // není nová validní data → push NAN pro konzistenci
+      pushHistory(NAN);
+    }
+    lastUpdateTime = millis();
+  }
+
   if (millis() - lastConsoleLog > 5000) {
     float rawTemp;
     if (useNTC) {
       int analogValue = analogRead(THERMISTOR_PIN);
-      Serial.print("[NTC] Raw analog: "); Serial.print(analogValue);
+      Serial.print("Analogová data: "); Serial.print(analogValue);
       rawTemp = readNTCTemperature();
     } else {
       sensors.requestTemperatures();
       rawTemp = sensors.getTempCByIndex(0);
-      Serial.print("[DS18B20] Raw: "); Serial.print(rawTemp);
+      Serial.print("DS18B20: "); Serial.print(rawTemp);
     }
-    Serial.print(" | Calibrated: "); Serial.println(rawTemp + calibration);
+    Serial.print(" | Kalibrovaná teplota: "); Serial.println(rawTemp + calibration);
     lastConsoleLog = millis();
   }
-  if (millis() - lastUpdateTime > 5000) {
-    readTemperature();
-    history[historyIndex] = temperature;
-    historyIndex = (historyIndex + 1) % 288;
-    lastUpdateTime = millis();
-  }
+
+  delay(1000);
 }

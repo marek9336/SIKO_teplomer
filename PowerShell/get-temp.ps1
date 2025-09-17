@@ -1,5 +1,5 @@
-
-$response = Invoke-RestMethod -Uri "http://IP_ADRESA/api/temp"
-$status = Invoke-RestMethod -Uri "http://IP_ADRESA/api/status"
-Write-Host "Teplota: $($response.temperature) °C (Kalibrace: $($response.calibration))"
-Write-Host "Senzor: $($response.sensor)"
+$IP = "10.6.0.188"
+$response = Invoke-RestMethod -Uri "$IP/api/temp"
+Write-Host "Teplota: $($response.temperature) °C"
+# $status = Invoke-RestMethod -Uri "$IP/api/status"
+# Write-Host "Senzor: $($response.sensor)"
