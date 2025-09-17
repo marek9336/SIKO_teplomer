@@ -145,6 +145,11 @@ const char index_html[] PROGMEM = R"rawliteral(
 <div id="btc">BTC: <span id="btc_usd">--</span> USD <br> <span id="btc_czk">--</span> CZK</div>
 <div id="citace">„…načítám citaci…“</div>
 
+<div id="countdown" style="margin: 8px 0; font-size: 0.9em; color:#ddd;">
+  ⏳ Odpočet do zahájení voleb: …
+</div>
+
+
 <script>
 function updateClock() {
   const now = new Date();
@@ -262,6 +267,39 @@ function drawChart(data) {
     ctx.fillText(label, x, c.height - 5);
   }
 }
+
+// Countdown do startu voleb do PS PČR: 3. 10. 2025 14:00 CEST
+// Robustně v UTC: 14:00 CEST = 12:00 UTC (měsíce 0-index → říjen = 9)
+const electionStartUTC = new Date(Date.UTC(2025, 9, 3, 12, 0, 0));
+
+function formatDelta(ms) {
+  if (ms <= 0) return "0 dní 00:00:00";
+  const totalSec = Math.floor(ms / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const rem  = totalSec % 86400;
+  const hh   = String(Math.floor(rem / 3600)).padStart(2, "0");
+  const mm   = String(Math.floor((rem % 3600) / 60)).padStart(2, "0");
+  const ss   = String(rem % 60).padStart(2, "0");
+  return `${days} dní ${hh}:${mm}:${ss}`;
+}
+
+function updateCountdown() {
+  const now = new Date();
+  const diff = electionStartUTC.getTime() - now.getTime();
+  const el = document.getElementById("countdown");
+
+  if (!el) return;
+
+  if (diff > 0) {
+    el.textContent = "⏳ Odpočet do zahájení voleb: " + formatDelta(diff);
+  } else {
+    // Volby už začaly – volitelně můžeš zobrazit jiný stav (např. „Probíhají“ / „Po volbách“)
+    el.textContent = "🗳️ Volby právě probíhají nebo už začaly.";
+  }
+}
+setInterval(updateCountdown, 1000);
+updateCountdown();
+
 </script></body></html>
 )rawliteral";
 
