@@ -298,7 +298,7 @@ function updateCountdown() {
   if (!el) return;
 
   if (diff > 0) {
-    el.textContent = "⏳ Odpočet do zahájení voleb: " + formatDelta(diff);
+    el.textContent = "Odpočet do zahájení voleb: " + formatDelta(diff);
   } else {
     // Volby už začaly – volitelně můžeš zobrazit jiný stav (např. „Probíhají“ / „Po volbách“)
     el.textContent = "🗳️ Volby právě probíhají nebo už začaly.";
