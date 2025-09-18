@@ -23,6 +23,11 @@ int   minuteSamples = 0;
 unsigned long lastMinuteCommit = 0;
 float minuteAvgTemp = NAN;   // tohle se bude posílat přes API a zobrazovat
 
+// --- 1h delta z minutových průměrů ---
+#define MIN_HISTORY_MINUTES 180        // držíme 3 hodiny do zásoby
+float minuteHistory[MIN_HISTORY_MINUTES];
+int   minuteHistoryIdx = 0;
+bool  minuteHistoryPrimed = false;     // až naplníme aspoň 60 vzorků
 
 #ifndef GITHUB_BASE_URL
 #define GITHUB_BASE_URL "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/Pictures/"
@@ -145,7 +150,8 @@ const char index_html[] PROGMEM = R"rawliteral(
 <div id="internetTime"></div>
 <div id="obed"></div>
 <div>Teplota: <span id="temperature">--</span> °C</div>
-<canvas id="graph" width="800" height="300"></canvas>
+<div id="delta" style="font-size:0.9em;color:#ddd;">Δ poslední hodina: -- °C</div>
+<!--<canvas id="graph" width="800" height="300"></canvas>-->
 
 <img id="meme" src="" alt="Meme obrázek">
 
@@ -174,17 +180,22 @@ setInterval(updateClock, 1000); updateClock();
 async function updateData() {
   try {
     const t = await fetch("/api/temp").then(r => r.json());
-    document.getElementById("temperature").innerText = (t.temperature !== undefined && !isNaN(t.temperature)) ? t.temperature.toFixed(1) : '--';
+    // minutový průměr
+    const temp = (t.temperature !== undefined && !isNaN(t.temperature)) ? Number(t.temperature) : NaN;
+    document.getElementById("temperature").innerText = isNaN(temp) ? '--' : temp.toFixed(1);
 
+    // delta 1h
+    const d = (t.delta1h !== undefined && !isNaN(t.delta1h)) ? Number(t.delta1h) : NaN;
+    const sign = isNaN(d) ? "" : (d > 0 ? "+" : "");
+    document.getElementById("delta").innerText = "Δ poslední hodina: " + (isNaN(d) ? "--" : (sign + d.toFixed(1))) + " °C";
+
+    // meme
     const m = await fetch("/api/meme").then(r => r.json());
     document.getElementById("meme").src = m.meme;
 
-    const h = await fetch("/api/history").then(r => r.json());
-    drawChart(h);
-
   } catch (e) { console.error("Chyba:", e); }
 }
-setInterval(updateData, 5000); updateData();
+setInterval(updateData, 5000); updateData();  // klidně nech 5 s, mění se jen když /api/temp “commitne” minutu
 
 async function updateBTC() {
   try {
@@ -307,6 +318,29 @@ function updateCountdown() {
 setInterval(updateCountdown, 1000);
 updateCountdown();
 
+// Odpočet do oběda (každý den 11:40 místního času)
+function nextLunchTarget(now) {
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 11, 40, 0, 0);
+  return (now >= target) ? new Date(target.getTime() + 24*3600*1000) : target;
+}
+function fmtHMS(ms) {
+  if (ms <= 0) return "00:00:00";
+  const totalSec = Math.floor(ms / 1000);
+  const hh = String(Math.floor(totalSec / 3600)).padStart(2,"0");
+  const mm = String(Math.floor((totalSec % 3600) / 60)).padStart(2,"0");
+  const ss = String(totalSec % 60).padStart(2,"0");
+  return `${hh}:${mm}:${ss}`;
+}
+function updateLunchCountdown() {
+  const now = new Date();
+  const t = nextLunchTarget(now);
+  const diff = t.getTime() - now.getTime();
+  const el = document.getElementById("obed");
+  if (el) el.textContent = "Oběd bude za: " + fmtHMS(diff);
+}
+setInterval(updateLunchCountdown, 1000);
+updateLunchCountdown();
+
 </script></body></html>
 )rawliteral";
 
@@ -355,12 +389,13 @@ void pushHistory(float v) {
 
 // --- API handlery ---
 void handleTemp() {
-  StaticJsonDocument<160> doc;
+  StaticJsonDocument<192> doc;
   int analogRaw = useNTC ? analogRead(THERMISTOR_PIN) : -1;
-  doc["temperature"] = isnan(minuteAvgTemp) ? -999.0 : minuteAvgTemp;
+  doc["temperature"] = isnan(minuteAvgTemp) ? -999.0 : minuteAvgTemp; // 1min avg
+  doc["delta1h"]    = getDelta1h();                                   // může být NaN
   doc["calibration"] = calibration;
-  doc["sensorType"] = useNTC ? "ntc" : "ds18b20";
-  doc["analogRaw"] = analogRaw;
+  doc["sensorType"]  = useNTC ? "ntc" : "ds18b20";
+  doc["analogRaw"]   = analogRaw;
   String json; serializeJson(doc, json);
   server.send(200, "application/json", json);
 }
@@ -428,6 +463,25 @@ void handleSetConfig() {
   } else {
     server.send(405, "application/json", "{\"error\":\"Method Not Allowed\"}");
   }
+}
+
+void pushMinuteHistory(float v) {
+  minuteHistory[minuteHistoryIdx] = v;
+  minuteHistoryIdx = (minuteHistoryIdx + 1) % MIN_HISTORY_MINUTES;
+}
+
+float getDelta1h() {
+  // potřebujeme 60 minut starý vzorek
+  const int back = 60;
+  // zjisti, kolik platných vzorků máme
+  int valid = 0;
+  for (int i=0;i<MIN_HISTORY_MINUTES;i++) if (!isnan(minuteHistory[i])) valid++;
+  if (valid < back + 1) return NAN;
+
+  int idxPast = (minuteHistoryIdx - back - 1 + MIN_HISTORY_MINUTES) % MIN_HISTORY_MINUTES;
+  float past = minuteHistory[idxPast];
+  if (isnan(past) || isnan(minuteAvgTemp)) return NAN;
+  return minuteAvgTemp - past;
 }
 
 // --- HTTPS fetch helper (bez certifikátu pro jednoduchost) ---
@@ -528,6 +582,7 @@ void setup() {
   sensors.begin();
   loadComfortFromEEPROM();
   readTemperature();
+  for (int i = 0; i < MIN_HISTORY_MINUTES; i++) minuteHistory[i] = NAN;
   minuteAvgTemp = temperature;      // do prvního commit-u ukaž aktuální
   lastMinuteCommit = millis();      // start 1min okna
 
@@ -639,11 +694,14 @@ void loop() {
     minuteSamples++;
   }
 
-  // Každých 60 s zveřejni průměr poslední minuty
+  // každých 60 s zveřejni průměr poslední minuty
   if (millis() - lastMinuteCommit >= 60000UL) {
     if (minuteSamples > 0) {
       minuteAvgTemp = minuteSum / minuteSamples;
     }
+    // push do minutové historie pro Δ1h
+    pushMinuteHistory(minuteAvgTemp);
+
     // reset okna
     minuteSum = 0.0;
     minuteSamples = 0;
