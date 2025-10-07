@@ -28,7 +28,7 @@ float minuteAvgTemp = NAN;   // tohle se bude posílat přes API a zobrazovat
 float minuteHistory[MIN_HISTORY_MINUTES];
 int   minuteHistoryIdx = 0;
 bool  minuteHistoryPrimed = false;     // až naplníme aspoň 60 vzorků
-
+// --- Meme obrázky z GitHubu ---
 #ifndef GITHUB_BASE_URL
 #define GITHUB_BASE_URL "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/Pictures/"
 #endif
@@ -36,7 +36,11 @@ bool  minuteHistoryPrimed = false;     // až naplníme aspoň 60 vzorků
 // --- Nové: URL pro ceny a citace ---
 const char* COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,czk";
 const char* CITACE_URL    = "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/citace.txt";
-
+// --- Odpočty (JSON z GitHubu) ---
+const char* ODP_URL = "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/odpocty.json";
+unsigned long lastOdpoctyFetch = 0;
+String odpoctyCache;
+// --- NTC teploměr ---
 float readNTCTemperature() {
   int analogValue = analogRead(THERMISTOR_PIN);
   const float vRef = 3.3;
@@ -575,6 +579,22 @@ void handleCitace() {
   server.send(200, "application/json", json);
 }
 
+void handleOdpocty() {
+  unsigned long now = millis();
+  // Cache 1 hodina (stejně jako BTC/citace)
+  if (now - lastOdpoctyFetch > 3600000UL || odpoctyCache.length() == 0) {
+    String body;
+    if (httpsGET(ODP_URL, body) && body.length() > 0) {
+      odpoctyCache = body;
+      lastOdpoctyFetch = now;
+    }
+  }
+  if (odpoctyCache.length() == 0) {
+    server.send(502, "application/json", "{\"error\":\"fetch_failed\"}");
+  } else {
+    server.send(200, "application/json", odpoctyCache);
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -612,6 +632,7 @@ void setup() {
   server.on("/api/config", HTTP_POST, handleSetConfig);
   server.on("/api/meme", handleMeme);
   server.on("/api/setcomfort", handleSetComfort);
+  server.on("/api/odpocty", handleOdpocty);
 
   // Nové endpointy:
   server.on("/api/btc", handleBTC);
