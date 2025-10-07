@@ -1,12 +1,12 @@
 {
-   "udalosti":[
+   "events":[
       {
-         "nazev":"Vánoce",
-         "datum":"24.03.2025 18:00:00"
+         "title":"Vánoce",
+         "start":"2025-12-24T18:00:00+02:00"
       },
       {
-         "nazev":"Nový rok",
-         "datum":"01.01.2026 00:00:00"
+         "title":"Nový rok",
+         "start":"2026-01-01T00:00:00+02:00"
       }
    ]
 }
