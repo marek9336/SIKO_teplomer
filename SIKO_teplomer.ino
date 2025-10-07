@@ -335,6 +335,20 @@ function fmtHMS(ms) {
   const ss = String(totalSec % 60).padStart(2,"0");
   return `${hh}:${mm}:${ss}`;
 }
+function fmtDHMS(ms) {
+  if (ms <= 0) return "00:00:00";
+  const totalSec = Math.floor(ms / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const rem  = totalSec % 86400;
+  const hh   = String(Math.floor(rem / 3600)).padStart(2,"0");
+  const mm   = String(Math.floor((rem % 3600) / 60)).padStart(2,"0");
+  const ss   = String(rem % 60).padStart(2,"0");
+  if (days > 0) {
+    const dWord = (days === 1 ? "den" : (days >= 2 && days <= 4 ? "dny" : "dní"));
+    return `${days} ${dWord} ${hh}:${mm}:${ss}`;
+  }
+  return `${hh}:${mm}:${ss}`;
+}
 function updateLunchCountdown() {
   const now = new Date();
   const t = nextLunchTarget(now);
@@ -344,6 +358,118 @@ function updateLunchCountdown() {
 }
 setInterval(updateLunchCountdown, 1000);
 updateLunchCountdown();
+let countdownList = [];
+let currentEvent = null;
+let currentStartMs = null;
+let currentEndMs = null;
+
+// Parse začátku: podporujeme víc klíčů a formátů (ISO s 'Z' / +offset i číslo epoch)
+function parseStartMs(item) {
+  if (!item) return NaN;
+  // preferované klíče
+  const keys = ["start", "start_utc", "startISO", "datetime", "time", "iso", "ts", "epoch"];
+  let v;
+  for (const k of keys) {
+    if (item[k] !== undefined) { v = item[k]; break; }
+  }
+  if (v === undefined) return NaN;
+  if (typeof v === "number") return v;                  // epoch ms/s?
+  const d = new Date(v);
+  if (!isNaN(d.getTime())) return d.getTime();          // ISO string
+  // fallback: pokud někdo dá epoch v sekundách jako string
+  const n = Number(v);
+  if (!isNaN(n)) return (n > 1e12 ? n : n * 1000);
+  return NaN;
+}
+
+function parseEndMs(item) {
+  if (!item) return NaN;
+  if (item.end !== undefined) {
+    if (typeof item.end === "number") return item.end;
+    const d = new Date(item.end);
+    if (!isNaN(d.getTime())) return d.getTime();
+  }
+  if (item.durationMinutes !== undefined) {
+    const start = parseStartMs(item);
+    if (!isNaN(start)) return start + Number(item.durationMinutes) * 60000;
+  }
+  return NaN; // není-li definováno, bereme jen start
+}
+
+function normalizeList(raw) {
+  // JSON může být pole, nebo {events:[...]}
+  if (Array.isArray(raw)) return raw;
+  if (raw && Array.isArray(raw.events)) return raw.events;
+  return [];
+}
+
+// vyber nejbližší budoucí
+function pickNextEvent(list) {
+  const now = Date.now();
+  let best = null;
+  let bestStart = Infinity;
+  for (const it of list) {
+    const s = parseStartMs(it);
+    if (!isNaN(s) && s > now && s < bestStart) {
+      best = it; bestStart = s;
+    }
+  }
+  if (best) {
+    currentEvent = best;
+    currentStartMs = parseStartMs(best);
+    currentEndMs = parseEndMs(best);
+    return true;
+  }
+  return false;
+}
+
+function renderGenericCountdown() {
+  const el = document.getElementById("countdown");
+  if (!el) return;
+  if (!currentEvent || !currentStartMs) {
+    el.textContent = "🗓️ Žádná příští událost";
+    return;
+  }
+  const now = Date.now();
+  const diff = currentStartMs - now;
+
+  const title = currentEvent.title || "Událost";
+  if (diff > 0) {
+    el.textContent = `⏳ ${title}: ${fmtDHMS(diff)}`;
+  } else {
+    // po začátku: pokud je definovaný konec, ukaz 'Probíhá'; jinak přejdi na další
+    if (!isNaN(currentEndMs) && now < currentEndMs) {
+      el.textContent = `🟢 ${title}: probíhá`;
+    } else {
+      // vyber další z již nacachovaného listu, ať to hned přepne
+      if (!pickNextEvent(countdownList)) {
+        el.textContent = "🗓️ Žádná příští událost";
+      }
+    }
+  }
+}
+
+async function loadCountdowns() {
+  try {
+    // proxy přes ESP kvůli CORS + máme 1h cache na backendu
+    const data = await fetch("/api/odpocty?ts=" + Date.now()).then(r => r.json());
+    countdownList = normalizeList(data);
+
+    // seřadit pro jistotu podle startu
+    countdownList.sort((a,b) => parseStartMs(a) - parseStartMs(b));
+
+    // vyber nejbližší
+    pickNextEvent(countdownList);
+  } catch(e) {
+    console.error("odpocty load fail:", e);
+  }
+}
+
+// refresh UI každou sekundu, data každou hodinu (stejný rytmus jako BTC/citace)
+setInterval(renderGenericCountdown, 1000);
+setInterval(loadCountdowns, 3600000);
+loadCountdowns();
+renderGenericCountdown();
 
 </script></body></html>
 )rawliteral";

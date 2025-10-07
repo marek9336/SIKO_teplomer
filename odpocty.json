@@ -1,12 +1,25 @@
 {
-   "udalosti":[
-      {
-         "nazev":"Vánoce",
-         "datum":"24.03.2025 18:00:00"
-      },
-      {
-         "nazev":"Nový rok",
-         "datum":"01.01.2026 00:00:00"
-      }
-   ]
+  "events": [
+    { "title": "Jirka narozeniny, den vzniku Československa","start": "2025-10-28T00:00:00+02:00" },
+    { "title": "Den boje za svobodu a demokracii","start": "2025-11-17T00:00:00+02:00" },
+    { "title": "Vánoce",  "start": "2025-12-24T18:00:00+02:00" },
+    { "title": "Nový rok","start": "2026-01-01T00:00:00+02:00" },
+    { "title": "Marek narozeniny","start": "2026-03-31T00:00:00+02:00" },
+    { "title": "Velký pátek","start": "2026-04-03T00:00:00+02:00" },
+    { "title": "Velikonoční pondělí","start": "2026-04-06T00:00:00+02:00" },
+    { "title": "Svátek práce","start": "2026-05-01T00:00:00+02:00" },
+    { "title": "Den vítězství","start": "2026-05-08T00:00:00+02:00" },
+    { "title": "Rosťa narozeniny","start": "2026-05-20T00:00:00+02:00" },
+    { "title": "Den slovanských věrozvěstů Cyrila a Metoděje","start": "2026-07-05T00:00:00+02:00" },
+    { "title": "Den upálení mistra Jana Husa","start": "2026-07-06T00:00:00+02:00" },
+    { "title": "Vlasta narozeniny","start": "2026-07-10T00:00:00+02:00" },
+    { "title": "Martina narozeniny","start": "2026-09-03T00:00:00+02:00" },
+    { "title": "Tomík narozeniny","start": "2026-09-25T00:00:00+02:00" },
+    { "title": "Den české státnosti","start": "2026-09-28T00:00:00+02:00" },
+    { "title": "Den vzniku samostatného československého státu","start": "2026-10-28T00:00:00+02:00" },
+    { "title": "Den boje za svobodu a demokracii","start": "2026-11-17T00:00:00+02:00" },
+    { "title": "Jirka narozeniny","start": "2026-10-28T00:00:00+02:00" },
+    { "title": "Vánoce",  "start": "2026-12-24T18:00:00+02:00" },
+    { "title": "Nový rok","start": "2027-01-01T00:00:00+02:00" }
+  ]
 }
