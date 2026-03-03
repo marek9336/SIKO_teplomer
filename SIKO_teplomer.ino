@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <Update.h>
 #include <math.h>
 
 #define THERMISTOR_PIN 2
@@ -595,6 +596,19 @@ void handleSetConfig() {
   }
 }
 
+void handleGetConfig() {
+  StaticJsonDocument<256> doc;
+  doc["comfortMin"] = comfortMin;
+  doc["comfortMax"] = comfortMax;
+  doc["calibration"] = calibration;
+  doc["lastValidTemperature"] = lastValidTemperature;
+  doc["historyLength"] = 24;   // legacy UI field, historie je ve fw pevne dana
+  doc["historyInterval"] = 15; // legacy UI field
+  doc["sensorType"] = useNTC ? "ntc" : "ds18b20";
+  String json; serializeJson(doc, json);
+  server.send(200, "application/json", json);
+}
+
 void pushMinuteHistory(float v) {
   minuteHistory[minuteHistoryIdx] = v;
   minuteHistoryIdx = (minuteHistoryIdx + 1) % MIN_HISTORY_MINUTES;
@@ -755,10 +769,36 @@ void setup() {
   server.on("/api/temp", handleTemp);
   server.on("/api/history", handleHistory);
   server.on("/api/status", handleStatus);
+  server.on("/api/config", HTTP_GET, handleGetConfig);
   server.on("/api/config", HTTP_POST, handleSetConfig);
   server.on("/api/meme", handleMeme);
   server.on("/api/setcomfort", handleSetComfort);
   server.on("/api/odpocty", handleOdpocty);
+  server.on("/update", HTTP_POST,
+    []() {
+      bool ok = !Update.hasError();
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/plain", ok ? "OTA OK, restartuji..." : "OTA FAIL");
+      delay(500);
+      if (ok) ESP.restart();
+    },
+    []() {
+      HTTPUpload& upload = server.upload();
+      if (upload.status == UPLOAD_FILE_START) {
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+          Update.printError(Serial);
+        }
+      } else if (upload.status == UPLOAD_FILE_END) {
+        if (!Update.end(true)) {
+          Update.printError(Serial);
+        }
+      }
+    }
+  );
 
   // Nové endpointy:
   server.on("/api/btc", handleBTC);
@@ -785,15 +825,13 @@ void setup() {
     <option value="ds18b20">DS18B20</option><option value="ntc">NTC (analog)</option></select></label>
   <label>Interval záznamu (min): <select name="historyInterval">
     <option value="15">15</option><option value="30">30</option><option value="60">60</option></select></label>
-  <label>OTA URL: nepoužívat<input type="text" name="ota_url" style="width:90%;"></label>
   <br>
   <button type="submit">💾 Uložit změny</button>
   <button type="button" onclick="clearHistory()">🗑️ Smazat historii</button>
-  <button type="button" onclick="runOTA()">🔄 Spustit OTA z URL</button>
 </form>
 <br><hr><br>
 <form method="POST" action="/update" enctype="multipart/form-data">
-  <label> 📂 nepoužívat OTA soubor (.bin): <input type="file" name="update"></label><br>
+  <label> 📂 OTA soubor (.bin): <input type="file" name="update" accept=".bin"></label><br>
   <input type="submit" value="Nahrát a aktualizovat">
 </form>
 <script>
@@ -805,7 +843,20 @@ document.getElementById("settingsForm").addEventListener("submit", function(e){
   let data = {}; const form = e.target;
   for (let i=0; i<form.elements.length; i++) {
     let el = form.elements[i];
-    if (el.name) data[el.name] = isNaN(el.value) ? el.value : parseFloat(el.value);
+    if (!el.name) continue;
+    if (el.tagName === "SELECT") {
+      data[el.name] = el.value;
+      continue;
+    }
+    if (el.type === "number") {
+      const raw = (el.value || "").trim();
+      if (!raw) continue;
+      const n = Number(raw);
+      if (Number.isFinite(n)) data[el.name] = n;
+      continue;
+    }
+    const raw = (el.value || "").trim();
+    if (raw) data[el.name] = raw;
   }
   fetch("/api/config", {
     method: "POST",
@@ -816,9 +867,6 @@ document.getElementById("settingsForm").addEventListener("submit", function(e){
 function clearHistory(){
   // případně přidej endpoint /api/clearhistory
   alert("Endpoint clearhistory není implementován.");
-}
-function runOTA(){
-  fetch("/api/update", { method:"POST" }).then(() => alert("Spouštím OTA aktualizaci..."));
 }
 </script>
 </body></html>
