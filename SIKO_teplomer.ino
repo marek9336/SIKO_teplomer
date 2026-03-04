@@ -9,8 +9,9 @@
 #include <WiFiClientSecure.h>
 #include <Update.h>
 #include <math.h>
+#include <esp_ota_ops.h>
 
-#define FW_VERSION "1.0.5"
+#define FW_VERSION "1.0.6"
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -98,6 +99,9 @@ String cachedQuote = "";
 String otaLastError = "";
 bool otaLastSuccess = false;
 bool otaUploadStarted = false;
+bool otaUploadEnded = false;
+size_t otaBytesExpected = 0;
+size_t otaBytesWritten = 0;
 
 // --- EEPROM ---
 #define EEPROM_COMFORT_MIN 0
@@ -873,14 +877,22 @@ void setup() {
   server.on(
     "/update", HTTP_POST,
     []() {
-      bool ok = otaUploadStarted && otaLastSuccess && otaLastError.length() == 0;
+      bool ok = otaUploadStarted && otaUploadEnded && otaLastSuccess && otaLastError.length() == 0;
       StaticJsonDocument<256> out;
       out["ok"] = ok;
       out["version"] = FW_VERSION;
+      out["upload_started"] = otaUploadStarted;
+      out["upload_ended"] = otaUploadEnded;
+      out["bytes_written"] = (uint32_t)otaBytesWritten;
+      out["bytes_expected"] = (uint32_t)otaBytesExpected;
       if (ok) {
         out["message"] = "OTA OK, restartuji...";
       } else {
-        if (otaLastError.length() == 0) otaLastError = "Update finalize failed";
+        if (otaLastError.length() == 0) {
+          if (!otaUploadStarted) otaLastError = "Upload handler not triggered";
+          else if (!otaUploadEnded) otaLastError = "Upload did not finish";
+          else otaLastError = String(Update.errorString());
+        }
         out["message"] = "OTA FAIL";
         out["error"] = otaLastError;
         out["error_code"] = (int)Update.getError();
@@ -891,6 +903,11 @@ void setup() {
       server.send(ok ? 200 : 500, "application/json", response);
       delay(500);
       if (ok) ESP.restart();
+      otaUploadStarted = false;
+      otaUploadEnded = false;
+      otaLastSuccess = false;
+      otaBytesExpected = 0;
+      otaBytesWritten = 0;
     },
     []() {
       HTTPUpload& upload = server.upload();
@@ -898,26 +915,38 @@ void setup() {
         otaLastError = "";
         otaLastSuccess = false;
         otaUploadStarted = true;
-        if (upload.totalSize == 0) {
-          otaLastError = "Empty upload";
+        otaUploadEnded = false;
+        otaBytesExpected = upload.totalSize;
+        otaBytesWritten = 0;
+
+        const esp_partition_t* nextPart = esp_ota_get_next_update_partition(NULL);
+        if (nextPart == NULL) {
+          otaLastError = "No OTA partition available";
           return;
         }
-        if (!Update.begin(upload.totalSize, U_FLASH)) {
+
+        size_t beginSize = (upload.totalSize > 0) ? upload.totalSize : UPDATE_SIZE_UNKNOWN;
+        if (!Update.begin(beginSize, U_FLASH)) {
           otaLastError = otaErrorToString(Update.getError());
           Update.printError(Serial);
         }
       } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        size_t written = Update.write(upload.buf, upload.currentSize);
+        otaBytesWritten += written;
+        if (written != upload.currentSize) {
           otaLastError = otaErrorToString(Update.getError());
+          otaLastSuccess = false;
           Update.printError(Serial);
         }
       } else if (upload.status == UPLOAD_FILE_ABORTED) {
         otaLastError = "Upload aborted by client";
         otaLastSuccess = false;
+        otaUploadEnded = false;
         Update.abort();
       } else if (upload.status == UPLOAD_FILE_END) {
+        otaUploadEnded = true;
         if (!Update.end()) {
-          otaLastError = otaErrorToString(Update.getError());
+          otaLastError = String(Update.errorString());
           otaLastSuccess = false;
           Update.printError(Serial);
         } else {
@@ -955,7 +984,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.5</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.6</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1097,6 +1126,10 @@ otaForm.addEventListener("submit", function(e){
       otaProgressText.textContent = "OTA selhalo";
       logOTA("OTA FAIL: " + (resp.error || resp.message || "neznámá chyba"));
       if (resp.error_code !== undefined) logOTA("Kód chyby: " + resp.error_code);
+      if (resp.upload_started !== undefined) logOTA("Upload started: " + resp.upload_started);
+      if (resp.upload_ended !== undefined) logOTA("Upload ended: " + resp.upload_ended);
+      if (resp.bytes_written !== undefined) logOTA("Bytes written: " + resp.bytes_written);
+      if (resp.bytes_expected !== undefined) logOTA("Bytes expected: " + resp.bytes_expected);
     }
   };
 
