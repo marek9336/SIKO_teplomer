@@ -11,7 +11,7 @@
 #include <math.h>
 #include <esp_ota_ops.h>
 
-#define FW_VERSION "1.0.6"
+#define FW_VERSION "1.0.7"
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -100,6 +100,7 @@ String otaLastError = "";
 bool otaLastSuccess = false;
 bool otaUploadStarted = false;
 bool otaUploadEnded = false;
+bool otaSizeKnown = false;
 size_t otaBytesExpected = 0;
 size_t otaBytesWritten = 0;
 
@@ -906,6 +907,7 @@ void setup() {
       otaUploadStarted = false;
       otaUploadEnded = false;
       otaLastSuccess = false;
+      otaSizeKnown = false;
       otaBytesExpected = 0;
       otaBytesWritten = 0;
     },
@@ -916,6 +918,7 @@ void setup() {
         otaLastSuccess = false;
         otaUploadStarted = true;
         otaUploadEnded = false;
+        otaSizeKnown = (upload.totalSize > 0);
         otaBytesExpected = upload.totalSize;
         otaBytesWritten = 0;
 
@@ -925,7 +928,7 @@ void setup() {
           return;
         }
 
-        size_t beginSize = (upload.totalSize > 0) ? upload.totalSize : UPDATE_SIZE_UNKNOWN;
+        size_t beginSize = otaSizeKnown ? upload.totalSize : UPDATE_SIZE_UNKNOWN;
         if (!Update.begin(beginSize, U_FLASH)) {
           otaLastError = otaErrorToString(Update.getError());
           Update.printError(Serial);
@@ -945,7 +948,8 @@ void setup() {
         Update.abort();
       } else if (upload.status == UPLOAD_FILE_END) {
         otaUploadEnded = true;
-        if (!Update.end()) {
+        bool finalized = otaSizeKnown ? Update.end() : Update.end(true);
+        if (!finalized) {
           otaLastError = String(Update.errorString());
           otaLastSuccess = false;
           Update.printError(Serial);
@@ -984,7 +988,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.6</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.7</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
