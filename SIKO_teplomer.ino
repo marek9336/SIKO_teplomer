@@ -12,7 +12,8 @@
 #include <esp_ota_ops.h>
 #include <esp_err.h>
 
-#define FW_VERSION "1.0.8"
+#define FW_VERSION "1.0.10"
+#define FW_BUILD_TARGET "esp32:esp32:esp32"
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -107,6 +108,9 @@ size_t otaBytesWritten = 0;
 int otaLastErrorCode = 0;
 esp_ota_handle_t otaHandle = 0;
 const esp_partition_t* otaTargetPart = NULL;
+int otaFirstByte = -1;
+String otaTargetLabel = "";
+String otaRunningLabel = "";
 
 // --- EEPROM ---
 #define EEPROM_COMFORT_MIN 0
@@ -573,6 +577,7 @@ void handleStatus() {
   StaticJsonDocument<240> doc;
   doc["uptime"] = millis() / 1000;
   doc["version"] = FW_VERSION;
+  doc["buildTarget"] = FW_BUILD_TARGET;
   doc["comfortMin"] = comfortMin;
   doc["comfortMax"] = comfortMax;
   doc["calibration"] = calibration;
@@ -847,6 +852,9 @@ void setup() {
       out["upload_ended"] = otaUploadEnded;
       out["bytes_written"] = (uint32_t)otaBytesWritten;
       out["bytes_expected"] = (uint32_t)otaBytesExpected;
+      out["first_byte"] = otaFirstByte;
+      out["target_partition"] = otaTargetLabel;
+      out["running_partition"] = otaRunningLabel;
       if (ok) {
         out["message"] = "OTA OK, restartuji...";
       } else {
@@ -874,6 +882,9 @@ void setup() {
       otaLastErrorCode = 0;
       otaHandle = 0;
       otaTargetPart = NULL;
+      otaFirstByte = -1;
+      otaTargetLabel = "";
+      otaRunningLabel = "";
     },
     []() {
       HTTPUpload& upload = server.upload();
@@ -888,6 +899,12 @@ void setup() {
         otaLastErrorCode = 0;
         otaHandle = 0;
         otaTargetPart = NULL;
+        otaFirstByte = -1;
+        otaTargetLabel = "";
+        otaRunningLabel = "";
+
+        const esp_partition_t* runningPart = esp_ota_get_running_partition();
+        if (runningPart != NULL) otaRunningLabel = String(runningPart->label);
 
         otaTargetPart = esp_ota_get_next_update_partition(NULL);
         if (otaTargetPart == NULL) {
@@ -895,6 +912,7 @@ void setup() {
           otaLastErrorCode = (int)ESP_ERR_NOT_FOUND;
           return;
         }
+        otaTargetLabel = String(otaTargetPart->label);
 
         size_t beginSize = otaSizeKnown ? upload.totalSize : OTA_SIZE_UNKNOWN;
         esp_err_t err = esp_ota_begin(otaTargetPart, beginSize, &otaHandle);
@@ -909,6 +927,17 @@ void setup() {
           otaLastErrorCode = (int)ESP_FAIL;
           otaLastSuccess = false;
           return;
+        }
+        if (otaBytesWritten == 0 && upload.currentSize > 0) {
+          otaFirstByte = (int)upload.buf[0];
+          if (otaFirstByte != 0xE9) {
+            otaLastError = "Invalid image magic (expected 0xE9)";
+            otaLastErrorCode = (int)ESP_ERR_OTA_VALIDATE_FAILED;
+            otaLastSuccess = false;
+            esp_ota_abort(otaHandle);
+            otaHandle = 0;
+            return;
+          }
         }
         esp_err_t err = esp_ota_write(otaHandle, (const void*)upload.buf, upload.currentSize);
         if (err != ESP_OK) {
@@ -986,7 +1015,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.8</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.10</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1132,6 +1161,9 @@ otaForm.addEventListener("submit", function(e){
       if (resp.upload_ended !== undefined) logOTA("Upload ended: " + resp.upload_ended);
       if (resp.bytes_written !== undefined) logOTA("Bytes written: " + resp.bytes_written);
       if (resp.bytes_expected !== undefined) logOTA("Bytes expected: " + resp.bytes_expected);
+      if (resp.first_byte !== undefined) logOTA("First byte: " + resp.first_byte);
+      if (resp.running_partition) logOTA("Running partition: " + resp.running_partition);
+      if (resp.target_partition) logOTA("Target partition: " + resp.target_partition);
     }
   };
 
