@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <math.h>
 
-#define FW_VERSION "1.0.2"
+#define FW_VERSION "1.0.3"
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -202,6 +202,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     margin: 20px auto; display: block;
   }
   #btc, #citace { margin: 8px 0; font-size: 0.9em; color:#ddd; }
+  #countdownEvents { white-space: pre-line; }
 </style>
 </head><body>
 <h1 style="font-size:2em; font-weight:bold;">IT teploměr <a href='/settings' style='text-decoration:none;'>🐥</a></h1>
@@ -483,30 +484,56 @@ function pickNextEvent(list) {
   return false;
 }
 
+function getUpcomingEvents(list, nowMs) {
+  const out = [];
+  for (const it of list) {
+    const s = parseStartMs(it);
+    if (!isNaN(s) && s > nowMs) out.push({ item: it, startMs: s });
+  }
+  out.sort((a, b) => a.startMs - b.startMs);
+  return out;
+}
+
 function renderGenericCountdown() {
   const el = document.getElementById("countdownEvents");
   if (!el) return;
-  if (!currentEvent || !currentStartMs) {
+  if ((!currentEvent || !currentStartMs) && !pickNextEvent(countdownList)) {
     el.textContent = "🗓️ Žádná příští událost";
     return;
   }
+
   const now = Date.now();
   const diff = currentStartMs - now;
-
+  let firstLine = "";
   const title = currentEvent.title || "Událost";
   if (diff > 0) {
-    el.textContent = `⏳ ${title}: ${fmtDHMS(diff)}`;
+    firstLine = `⏳ ${title}: ${fmtDHMS(diff)}`;
   } else {
     // po začátku: pokud je definovaný konec, ukaz 'Probíhá'; jinak přejdi na další
     if (!isNaN(currentEndMs) && now < currentEndMs) {
-      el.textContent = `🟢 ${title}: probíhá`;
+      firstLine = `🟢 ${title}: probíhá`;
     } else {
       // vyber další z již nacachovaného listu, ať to hned přepne
       if (!pickNextEvent(countdownList)) {
         el.textContent = "🗓️ Žádná příští událost";
+        return;
       }
+      renderGenericCountdown();
+      return;
     }
   }
+
+  const lines = [firstLine];
+  const cutoff = (currentStartMs > now) ? currentStartMs : now;
+  const nextTwo = getUpcomingEvents(countdownList, now)
+    .filter(e => e.startMs > cutoff)
+    .slice(0, 2);
+
+  for (const ev of nextTwo) {
+    const t = ev.item.title || "Událost";
+    lines.push(`➡️ ${t}: ${fmtDHMS(ev.startMs - now)}`);
+  }
+  el.textContent = lines.join("\n");
 }
 
 async function loadCountdowns() {
@@ -955,7 +982,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.2</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.3</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
