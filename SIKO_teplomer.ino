@@ -12,7 +12,7 @@
 #include <esp_ota_ops.h>
 #include <esp_err.h>
 
-#define FW_VERSION "1.0.11"
+#define FW_VERSION "1.0.12"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #define THERMISTOR_PIN 2
@@ -1012,10 +1012,12 @@ void setup() {
   progress { width:100%; height:18px; }
   #otaLog { background:#0f0f0f; color:#b9f7b9; border:1px solid #333; border-radius:8px; padding:8px; min-height:80px; white-space:pre-wrap; overflow-wrap:anywhere; }
   .muted { color:#aaa; font-size:0.9em; }
+  .toast { position:fixed; right:16px; top:16px; background:#1f6f3d; color:#fff; border:1px solid #2f9d58; border-radius:10px; padding:10px 14px; opacity:0; transform:translateY(-8px); transition:all .25s ease; z-index:9999; pointer-events:none; }
+  .toast.show { opacity:1; transform:translateY(0); }
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.11</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.12</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1065,6 +1067,7 @@ void setup() {
     <pre id="otaLog">Čekám na soubor...</pre>
   </div>
 </div>
+<div id="toast" class="toast">Update úspěšný</div>
 <script>
 fetch('/api/config').then(r => r.json()).then(cfg => {
   for (let k in cfg) if(document.forms[0][k]) document.forms[0][k].value = cfg[k];
@@ -1112,10 +1115,66 @@ const otaProgress = document.getElementById("otaProgress");
 const otaProgressText = document.getElementById("otaProgressText");
 const otaLog = document.getElementById("otaLog");
 const otaBtn = document.getElementById("otaBtn");
+const toast = document.getElementById("toast");
 
 function logOTA(msg){
   otaLog.textContent += "\n" + msg;
   otaLog.scrollTop = otaLog.scrollHeight;
+}
+
+function showToast(msg){
+  toast.textContent = msg;
+  toast.classList.add("show");
+  setTimeout(() => toast.classList.remove("show"), 3500);
+}
+
+if (localStorage.getItem("ota_update_success") === "1") {
+  localStorage.removeItem("ota_update_success");
+  showToast("Update úspěšný");
+}
+
+function waitForDeviceAndReload(){
+  const maxAttempts = 60; // ~60 s
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts++;
+    fetch("/api/status?ts=" + Date.now(), { cache: "no-store" })
+      .then(r => {
+        if (!r.ok) throw new Error("not-ready");
+        return r.json();
+      })
+      .then(() => {
+        clearInterval(timer);
+        localStorage.setItem("ota_update_success", "1");
+        location.reload();
+      })
+      .catch(() => {
+        otaProgressText.textContent = "Čekám na zařízení po restartu... (" + attempts + "s)";
+        if (attempts >= maxAttempts) {
+          clearInterval(timer);
+          otaBtn.disabled = false;
+          otaProgressText.textContent = "Zařízení se neozvalo, obnov stránku ručně.";
+          logOTA("Timeout při čekání na reboot.");
+        }
+      });
+  }, 1000);
+}
+
+function startRebootCountdown(seconds){
+  let left = seconds;
+  otaBtn.disabled = true;
+  otaProgress.value = 100;
+  otaProgressText.textContent = "Restart zařízení za " + left + " s";
+  const t = setInterval(() => {
+    left--;
+    if (left > 0) {
+      otaProgressText.textContent = "Restart zařízení za " + left + " s";
+      return;
+    }
+    clearInterval(t);
+    otaProgressText.textContent = "Kontroluji dostupnost zařízení...";
+    waitForDeviceAndReload();
+  }, 1000);
 }
 
 otaForm.addEventListener("submit", function(e){
@@ -1153,6 +1212,7 @@ otaForm.addEventListener("submit", function(e){
       otaProgress.value = 100;
       otaProgressText.textContent = "Hotovo, zařízení se restartuje";
       logOTA("OTA OK: " + (resp.message || "restart"));
+      startRebootCountdown(10);
     } else {
       otaProgressText.textContent = "OTA selhalo";
       logOTA("OTA FAIL: " + (resp.error || resp.message || "neznámá chyba"));
