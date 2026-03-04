@@ -11,8 +11,9 @@
 #include <math.h>
 #include <esp_ota_ops.h>
 #include <esp_err.h>
+#include <Preferences.h>
 
-#define FW_VERSION "1.0.12"
+#define FW_VERSION "1.0.13"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #define THERMISTOR_PIN 2
@@ -38,12 +39,15 @@ bool minuteHistoryPrimed = false;  // až naplníme aspoň 60 vzorků
 #ifndef GITHUB_BASE_URL
 #define GITHUB_BASE_URL "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/Pictures/"
 #endif
+#define DEFAULT_CITACE_URL "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/citace.txt"
+#define DEFAULT_ODP_URL "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/odpocty.json"
 
 // --- Nové: URL pro ceny a citace ---
 const char* COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,czk";
-const char* CITACE_URL = "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/citace.txt";
+String memeBaseURL = String(GITHUB_BASE_URL);
+String citaceURL = String(DEFAULT_CITACE_URL);
 // --- Odpočty (JSON z GitHubu) ---
-const char* ODP_URL = "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/odpocty.json";
+String odpoctyURL = String(DEFAULT_ODP_URL);
 unsigned long lastOdpoctyFetch = 0;
 String odpoctyCache;
 // --- NTC teploměr ---
@@ -111,6 +115,7 @@ const esp_partition_t* otaTargetPart = NULL;
 int otaFirstByte = -1;
 String otaTargetLabel = "";
 String otaRunningLabel = "";
+Preferences prefs;
 
 // --- EEPROM ---
 #define EEPROM_COMFORT_MIN 0
@@ -130,21 +135,21 @@ String selectMemeURL() {
   Serial.println(temp);
 
   if (isnan(temp) || temp <= -999) {
-    return String(GITHUB_BASE_URL) + "error.png";
+    return memeBaseURL + "error.png";
   } else if (temp < (comfortMin - 2.0)) {
-    return String(GITHUB_BASE_URL) + "zima_3.png";
+    return memeBaseURL + "zima_3.png";
   } else if (temp < (comfortMin - 1.0)) {
-    return String(GITHUB_BASE_URL) + "zima_2.png";
+    return memeBaseURL + "zima_2.png";
   } else if (temp < comfortMin) {
-    return String(GITHUB_BASE_URL) + "zima_1.png";
+    return memeBaseURL + "zima_1.png";
   } else if (temp > (comfortMax + 2.0)) {
-    return String(GITHUB_BASE_URL) + "horko_3.png";
+    return memeBaseURL + "horko_3.png";
   } else if (temp > (comfortMax + 1.0)) {
-    return String(GITHUB_BASE_URL) + "horko_2.png";
+    return memeBaseURL + "horko_2.png";
   } else if (temp > comfortMax) {
-    return String(GITHUB_BASE_URL) + "horko_1.png";
+    return memeBaseURL + "horko_1.png";
   } else {
-    return String(GITHUB_BASE_URL) + "ok_1.png";
+    return memeBaseURL + "ok_1.png";
   }
 }
 
@@ -524,6 +529,30 @@ void loadComfortFromEEPROM() {
   Serial.println(calibration);
 }
 
+void saveURLConfig() {
+  if (!prefs.begin("urlcfg", false)) return;
+  prefs.putString("meme", memeBaseURL);
+  prefs.putString("citace", citaceURL);
+  prefs.putString("odpocty", odpoctyURL);
+  prefs.end();
+}
+
+void loadURLConfig() {
+  if (!prefs.begin("urlcfg", true)) return;
+  String m = prefs.getString("meme", String(GITHUB_BASE_URL));
+  String c = prefs.getString("citace", String(DEFAULT_CITACE_URL));
+  String o = prefs.getString("odpocty", String(DEFAULT_ODP_URL));
+  prefs.end();
+
+  m.trim();
+  c.trim();
+  o.trim();
+
+  if (m.length() > 0) memeBaseURL = m;
+  if (c.length() > 0) citaceURL = c;
+  if (o.length() > 0) odpoctyURL = o;
+}
+
 // --- Čtení teploty ---
 void readTemperature() {
   float rawTemp;
@@ -614,7 +643,7 @@ void handleSetComfort() {
 
 void handleSetConfig() {
   if (server.method() == HTTP_POST) {
-    StaticJsonDocument<200> doc;
+    StaticJsonDocument<512> doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) return server.send(400, "application/json", "{\"error\":\"Bad JSON\"}");
     comfortMin = doc["comfortMin"] | comfortMin;
@@ -622,7 +651,25 @@ void handleSetConfig() {
     calibration = doc["calibration"] | calibration;
     String type = doc["sensorType"] | (useNTC ? "ntc" : "ds18b20");
     useNTC = (type == "ntc");
+
+    String newMeme = doc["memeBaseURL"] | memeBaseURL;
+    String newCitace = doc["citaceURL"] | citaceURL;
+    String newOdpocty = doc["odpoctyURL"] | odpoctyURL;
+    newMeme.trim();
+    newCitace.trim();
+    newOdpocty.trim();
+    if (newMeme.length() > 0) memeBaseURL = newMeme;
+    if (newCitace.length() > 0) citaceURL = newCitace;
+    if (newOdpocty.length() > 0) odpoctyURL = newOdpocty;
+
+    // Při změně URL vynulujeme cache, ať se nové zdroje načtou hned.
+    cachedQuote = "";
+    odpoctyCache = "";
+    lastQuoteFetch = 0;
+    lastOdpoctyFetch = 0;
+
     saveComfortToEEPROM();
+    saveURLConfig();
     server.send(200, "application/json", "{\"status\":\"updated\"}");
   } else {
     server.send(405, "application/json", "{\"error\":\"Method Not Allowed\"}");
@@ -630,11 +677,14 @@ void handleSetConfig() {
 }
 
 void handleGetConfig() {
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
   doc["comfortMin"] = comfortMin;
   doc["comfortMax"] = comfortMax;
   doc["calibration"] = calibration;
   doc["sensorType"] = useNTC ? "ntc" : "ds18b20";
+  doc["memeBaseURL"] = memeBaseURL;
+  doc["citaceURL"] = citaceURL;
+  doc["odpoctyURL"] = odpoctyURL;
   String json;
   serializeJson(doc, json);
   server.send(200, "application/json", json);
@@ -725,7 +775,7 @@ void handleCitace() {
   unsigned long now = millis();
   if (now - lastQuoteFetch > 3600000 || cachedQuote.length() == 0) {
     String txt;
-    if (httpsGET(CITACE_URL, txt)) {
+    if (httpsGET(citaceURL.c_str(), txt)) {
       // Normalizace konců řádků na '\n'
       txt.replace("\r\n", "\n");
       txt.replace('\r', '\n');
@@ -778,7 +828,7 @@ void handleOdpocty() {
   // Cache 1 hodina (stejně jako BTC/citace)
   if (now - lastOdpoctyFetch > 3600000UL || odpoctyCache.length() == 0) {
     String body;
-    if (httpsGET(ODP_URL, body) && body.length() > 0) {
+    if (httpsGET(odpoctyURL.c_str(), body) && body.length() > 0) {
       odpoctyCache = body;
       lastOdpoctyFetch = now;
     }
@@ -795,6 +845,7 @@ void setup() {
   EEPROM.begin(16);
   sensors.begin();
   loadComfortFromEEPROM();
+  loadURLConfig();
   readTemperature();
   for (int i = 0; i < MIN_HISTORY_MINUTES; i++) minuteHistory[i] = NAN;
   minuteAvgTemp = temperature;  // do prvního commit-u ukaž aktuální
@@ -1017,7 +1068,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.12</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.13</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1040,6 +1091,18 @@ void setup() {
           <option value="ds18b20">DS18B20</option>
           <option value="ntc">NTC (analog)</option>
         </select>
+      </div>
+      <div class="row">
+        <label>URL obrázků (GITHUB_BASE_URL)</label>
+        <input type="text" name="memeBaseURL" style="width:100%;max-width:720px;">
+      </div>
+      <div class="row">
+        <label>URL citací (CITACE_URL)</label>
+        <input type="text" name="citaceURL" style="width:100%;max-width:720px;">
+      </div>
+      <div class="row">
+        <label>URL odpočtů (ODP_URL)</label>
+        <input type="text" name="odpoctyURL" style="width:100%;max-width:720px;">
       </div>
       <div class="ota-actions">
         <button type="submit">💾 Uložit změny</button>
