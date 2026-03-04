@@ -13,7 +13,7 @@
 #include <esp_err.h>
 #include <Preferences.h>
 
-#define FW_VERSION "1.0.14"
+#define FW_VERSION "1.0.15"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #define THERMISTOR_PIN 2
@@ -91,6 +91,10 @@ unsigned long lastUpdateTime = 0;
 #define HISTORY_SIZE 288
 float history[HISTORY_SIZE];
 int historyIndex = 0;
+int historyCount = 0;
+
+String tempAvgMode = "1m";  // 1s,1m,5m,15m,1h,custom
+int tempAvgCustomSec = 60;  // použije se jen pro mode=custom
 
 // --- Průměrování 5 měření ---
 float avgBuf[5];
@@ -117,6 +121,8 @@ String otaTargetLabel = "";
 String otaRunningLabel = "";
 Preferences prefs;
 
+float getAveragedTemperature();
+
 // --- EEPROM ---
 #define EEPROM_COMFORT_MIN 0
 #define EEPROM_COMFORT_MAX 4
@@ -129,7 +135,7 @@ String otaErrorToString(esp_err_t err) {
 }
 
 String selectMemeURL() {
-  float temp = minuteAvgTemp;
+  float temp = getAveragedTemperature();
 
   Serial.print("Teplota: ");
   Serial.println(temp);
@@ -534,6 +540,8 @@ void saveURLConfig() {
   prefs.putString("meme", memeBaseURL);
   prefs.putString("citace", citaceURL);
   prefs.putString("odpocty", odpoctyURL);
+  prefs.putString("avg_mode", tempAvgMode);
+  prefs.putInt("avg_custom_sec", tempAvgCustomSec);
   prefs.end();
 }
 
@@ -542,6 +550,8 @@ void loadURLConfig() {
   String m = prefs.getString("meme", String(GITHUB_BASE_URL));
   String c = prefs.getString("citace", String(DEFAULT_CITACE_URL));
   String o = prefs.getString("odpocty", String(DEFAULT_ODP_URL));
+  String mode = prefs.getString("avg_mode", "1m");
+  int customSec = prefs.getInt("avg_custom_sec", 60);
   prefs.end();
 
   m.trim();
@@ -551,6 +561,16 @@ void loadURLConfig() {
   if (m.length() > 0) memeBaseURL = m;
   if (c.length() > 0) citaceURL = c;
   if (o.length() > 0) odpoctyURL = o;
+
+  mode.trim();
+  if (mode == "1s" || mode == "1m" || mode == "5m" || mode == "15m" || mode == "1h" || mode == "custom") {
+    tempAvgMode = mode;
+  } else {
+    tempAvgMode = "1m";
+  }
+  if (customSec < 1) customSec = 1;
+  if (customSec > 86400) customSec = 86400;
+  tempAvgCustomSec = customSec;
 }
 
 // --- Čtení teploty ---
@@ -573,13 +593,78 @@ void readTemperature() {
 void pushHistory(float v) {
   history[historyIndex] = v;
   historyIndex = (historyIndex + 1) % HISTORY_SIZE;
+  if (historyCount < HISTORY_SIZE) historyCount++;
+}
+
+float averageFromRecentHistorySec(int windowSec) {
+  if (historyCount <= 0) return NAN;
+  if (windowSec < 1) windowSec = 1;
+
+  int samplesNeeded = (windowSec + 4) / 5;  // commit historie je po ~5 s
+  if (samplesNeeded < 1) samplesNeeded = 1;
+  int samplesToUse = samplesNeeded;
+  if (samplesToUse > historyCount) samplesToUse = historyCount;
+  if (samplesToUse > HISTORY_SIZE) samplesToUse = HISTORY_SIZE;
+
+  float sum = 0.0f;
+  int valid = 0;
+  for (int i = 0; i < samplesToUse; i++) {
+    int idx = (historyIndex - 1 - i + HISTORY_SIZE) % HISTORY_SIZE;
+    float v = history[idx];
+    if (!isnan(v)) {
+      sum += v;
+      valid++;
+    }
+  }
+  if (valid == 0) return NAN;
+  return sum / valid;
+}
+
+float averageFromRecentMinuteHistory(int windowMinutes) {
+  if (minuteHistoryCount <= 0) return NAN;
+  if (windowMinutes < 1) windowMinutes = 1;
+
+  int samplesToUse = windowMinutes;
+  if (samplesToUse > minuteHistoryCount) samplesToUse = minuteHistoryCount;
+  if (samplesToUse > MIN_HISTORY_MINUTES) samplesToUse = MIN_HISTORY_MINUTES;
+
+  float sum = 0.0f;
+  int valid = 0;
+  for (int i = 0; i < samplesToUse; i++) {
+    int idx = (minuteHistoryIdx - 1 - i + MIN_HISTORY_MINUTES) % MIN_HISTORY_MINUTES;
+    float v = minuteHistory[idx];
+    if (!isnan(v)) {
+      sum += v;
+      valid++;
+    }
+  }
+  if (valid == 0) return NAN;
+  return sum / valid;
+}
+
+float getAveragedTemperature() {
+  if (tempAvgMode == "1s") return temperature;
+  if (tempAvgMode == "1m") return averageFromRecentHistorySec(60);
+  if (tempAvgMode == "5m") return averageFromRecentHistorySec(5 * 60);
+  if (tempAvgMode == "15m") return averageFromRecentHistorySec(15 * 60);
+  if (tempAvgMode == "1h") return averageFromRecentMinuteHistory(60);
+
+  // custom: krátké intervaly bereme z 5s historie, delší z minutové
+  int customSec = tempAvgCustomSec;
+  if (customSec < 1) customSec = 1;
+  if (customSec <= HISTORY_SIZE * 5) {
+    return averageFromRecentHistorySec(customSec);
+  }
+  int customMin = (customSec + 59) / 60;
+  return averageFromRecentMinuteHistory(customMin);
 }
 
 // --- API handlery ---
 void handleTemp() {
   StaticJsonDocument<192> doc;
   int analogRaw = useNTC ? analogRead(THERMISTOR_PIN) : -1;
-  doc["temperature"] = isnan(minuteAvgTemp) ? -999.0 : minuteAvgTemp;  // 1min avg
+  float tAvg = getAveragedTemperature();
+  doc["temperature"] = isnan(tAvg) ? -999.0 : tAvg;
   doc["delta1h"] = getDelta1h();                                       // může být NaN
   doc["calibration"] = calibration;
   doc["sensorType"] = useNTC ? "ntc" : "ds18b20";
@@ -655,12 +740,21 @@ void handleSetConfig() {
     String newMeme = doc["memeBaseURL"] | memeBaseURL;
     String newCitace = doc["citaceURL"] | citaceURL;
     String newOdpocty = doc["odpoctyURL"] | odpoctyURL;
+    String newAvgMode = doc["tempAvgMode"] | tempAvgMode;
+    int newCustomSec = doc["tempAvgCustomSec"] | tempAvgCustomSec;
     newMeme.trim();
     newCitace.trim();
     newOdpocty.trim();
+    newAvgMode.trim();
     if (newMeme.length() > 0) memeBaseURL = newMeme;
     if (newCitace.length() > 0) citaceURL = newCitace;
     if (newOdpocty.length() > 0) odpoctyURL = newOdpocty;
+    if (newAvgMode == "1s" || newAvgMode == "1m" || newAvgMode == "5m" || newAvgMode == "15m" || newAvgMode == "1h" || newAvgMode == "custom") {
+      tempAvgMode = newAvgMode;
+    }
+    if (newCustomSec < 1) newCustomSec = 1;
+    if (newCustomSec > 86400) newCustomSec = 86400;
+    tempAvgCustomSec = newCustomSec;
 
     // Při změně URL vynulujeme cache, ať se nové zdroje načtou hned.
     cachedQuote = "";
@@ -685,6 +779,8 @@ void handleGetConfig() {
   doc["memeBaseURL"] = memeBaseURL;
   doc["citaceURL"] = citaceURL;
   doc["odpoctyURL"] = odpoctyURL;
+  doc["tempAvgMode"] = tempAvgMode;
+  doc["tempAvgCustomSec"] = tempAvgCustomSec;
   String json;
   serializeJson(doc, json);
   server.send(200, "application/json", json);
@@ -698,6 +794,7 @@ void handleClearHistory() {
 
   for (int i = 0; i < HISTORY_SIZE; i++) history[i] = NAN;
   historyIndex = 0;
+  historyCount = 0;
 
   for (int i = 0; i < MIN_HISTORY_MINUTES; i++) minuteHistory[i] = NAN;
   minuteHistoryIdx = 0;
@@ -879,6 +976,7 @@ void setup() {
 
   // Inicializace historie
   for (int i = 0; i < HISTORY_SIZE; i++) history[i] = NAN;
+  historyCount = 0;
 
   server.on("/", []() {
     server.send_P(200, "text/html", index_html);
@@ -1068,7 +1166,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.14</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.15</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1091,6 +1189,21 @@ void setup() {
           <option value="ds18b20">DS18B20</option>
           <option value="ntc">NTC (analog)</option>
         </select>
+      </div>
+      <div class="row">
+        <label>Výpočet teploty pro GUI/API</label>
+        <select name="tempAvgMode">
+          <option value="1s">Poslední 1 vteřina</option>
+          <option value="1m">Průměr 1 minuta</option>
+          <option value="5m">Průměr 5 minut</option>
+          <option value="15m">Průměr 15 minut</option>
+          <option value="1h">Průměr 1 hodina</option>
+          <option value="custom">Vlastní</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Vlastní interval (sekundy)</label>
+        <input type="number" min="1" max="86400" step="1" name="tempAvgCustomSec">
       </div>
       <div class="row">
         <label>URL obrázků (GITHUB_BASE_URL)</label>
