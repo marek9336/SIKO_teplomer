@@ -12,8 +12,8 @@
 #include <esp_ota_ops.h>
 #include <esp_err.h>
 
-#define FW_VERSION "1.0.10"
-#define FW_BUILD_TARGET "esp32:esp32:esp32"
+#define FW_VERSION "1.0.11"
+#define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -1015,7 +1015,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.10</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.11</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
