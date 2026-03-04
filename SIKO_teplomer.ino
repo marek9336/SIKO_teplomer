@@ -10,8 +10,9 @@
 #include <Update.h>
 #include <math.h>
 #include <esp_ota_ops.h>
+#include <esp_err.h>
 
-#define FW_VERSION "1.0.7"
+#define FW_VERSION "1.0.8"
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -103,6 +104,9 @@ bool otaUploadEnded = false;
 bool otaSizeKnown = false;
 size_t otaBytesExpected = 0;
 size_t otaBytesWritten = 0;
+int otaLastErrorCode = 0;
+esp_ota_handle_t otaHandle = 0;
+const esp_partition_t* otaTargetPart = NULL;
 
 // --- EEPROM ---
 #define EEPROM_COMFORT_MIN 0
@@ -110,52 +114,9 @@ size_t otaBytesWritten = 0;
 #define EEPROM_CALIBRATION 8
 #define EEPROM_SENSOR_TYPE 12
 
-String otaErrorToString(uint8_t err) {
-  switch (err) {
-#ifdef UPDATE_ERROR_OK
-    case UPDATE_ERROR_OK: return "OK";
-#endif
-#ifdef UPDATE_ERROR_WRITE
-    case UPDATE_ERROR_WRITE: return "Write failed";
-#endif
-#ifdef UPDATE_ERROR_ERASE
-    case UPDATE_ERROR_ERASE: return "Erase failed";
-#endif
-#ifdef UPDATE_ERROR_READ
-    case UPDATE_ERROR_READ: return "Read failed";
-#endif
-#ifdef UPDATE_ERROR_SPACE
-    case UPDATE_ERROR_SPACE: return "Not enough space";
-#endif
-#ifdef UPDATE_ERROR_SIZE
-    case UPDATE_ERROR_SIZE: return "Invalid size";
-#endif
-#ifdef UPDATE_ERROR_STREAM
-    case UPDATE_ERROR_STREAM: return "Stream read timeout";
-#endif
-#ifdef UPDATE_ERROR_MD5
-    case UPDATE_ERROR_MD5: return "MD5 mismatch";
-#endif
-#ifdef UPDATE_ERROR_MAGIC_BYTE
-    case UPDATE_ERROR_MAGIC_BYTE: return "Invalid firmware format";
-#endif
-#ifdef UPDATE_ERROR_ABORT
-    case UPDATE_ERROR_ABORT: return "Upload aborted";
-#endif
-#ifdef UPDATE_ERROR_ACTIVATE
-    case UPDATE_ERROR_ACTIVATE: return "Could not activate new firmware";
-#endif
-#ifdef UPDATE_ERROR_NO_PARTITION
-    case UPDATE_ERROR_NO_PARTITION: return "No OTA partition";
-#endif
-#ifdef UPDATE_ERROR_BAD_ARGUMENT
-    case UPDATE_ERROR_BAD_ARGUMENT: return "Bad argument";
-#endif
-#ifdef UPDATE_ERROR_VALIDATE_FAILED
-    case UPDATE_ERROR_VALIDATE_FAILED: return "Validation failed";
-#endif
-    default: return String("Unknown error code ") + String(err);
-  }
+String otaErrorToString(esp_err_t err) {
+  if (err == ESP_OK) return "OK";
+  return String(esp_err_to_name(err));
 }
 
 String selectMemeURL() {
@@ -892,11 +853,11 @@ void setup() {
         if (otaLastError.length() == 0) {
           if (!otaUploadStarted) otaLastError = "Upload handler not triggered";
           else if (!otaUploadEnded) otaLastError = "Upload did not finish";
-          else otaLastError = String(Update.errorString());
+          else otaLastError = "OTA finalize failed";
         }
         out["message"] = "OTA FAIL";
         out["error"] = otaLastError;
-        out["error_code"] = (int)Update.getError();
+        out["error_code"] = otaLastErrorCode;
       }
       String response;
       serializeJson(out, response);
@@ -910,6 +871,9 @@ void setup() {
       otaSizeKnown = false;
       otaBytesExpected = 0;
       otaBytesWritten = 0;
+      otaLastErrorCode = 0;
+      otaHandle = 0;
+      otaTargetPart = NULL;
     },
     []() {
       HTTPUpload& upload = server.upload();
@@ -921,40 +885,74 @@ void setup() {
         otaSizeKnown = (upload.totalSize > 0);
         otaBytesExpected = upload.totalSize;
         otaBytesWritten = 0;
+        otaLastErrorCode = 0;
+        otaHandle = 0;
+        otaTargetPart = NULL;
 
-        const esp_partition_t* nextPart = esp_ota_get_next_update_partition(NULL);
-        if (nextPart == NULL) {
+        otaTargetPart = esp_ota_get_next_update_partition(NULL);
+        if (otaTargetPart == NULL) {
           otaLastError = "No OTA partition available";
+          otaLastErrorCode = (int)ESP_ERR_NOT_FOUND;
           return;
         }
 
-        size_t beginSize = otaSizeKnown ? upload.totalSize : UPDATE_SIZE_UNKNOWN;
-        if (!Update.begin(beginSize, U_FLASH)) {
-          otaLastError = otaErrorToString(Update.getError());
-          Update.printError(Serial);
+        size_t beginSize = otaSizeKnown ? upload.totalSize : OTA_SIZE_UNKNOWN;
+        esp_err_t err = esp_ota_begin(otaTargetPart, beginSize, &otaHandle);
+        if (err != ESP_OK) {
+          otaLastErrorCode = (int)err;
+          otaLastError = otaErrorToString(err);
+          Serial.printf("[OTA] begin failed: %s (%d)\n", otaLastError.c_str(), otaLastErrorCode);
         }
       } else if (upload.status == UPLOAD_FILE_WRITE) {
-        size_t written = Update.write(upload.buf, upload.currentSize);
-        otaBytesWritten += written;
-        if (written != upload.currentSize) {
-          otaLastError = otaErrorToString(Update.getError());
+        if (otaHandle == 0 || otaTargetPart == NULL) {
+          otaLastError = "OTA write before begin";
+          otaLastErrorCode = (int)ESP_FAIL;
           otaLastSuccess = false;
-          Update.printError(Serial);
+          return;
+        }
+        esp_err_t err = esp_ota_write(otaHandle, (const void*)upload.buf, upload.currentSize);
+        if (err != ESP_OK) {
+          otaLastErrorCode = (int)err;
+          otaLastError = otaErrorToString(err);
+          otaLastSuccess = false;
+          Serial.printf("[OTA] write failed: %s (%d)\n", otaLastError.c_str(), otaLastErrorCode);
+        } else {
+          otaBytesWritten += upload.currentSize;
         }
       } else if (upload.status == UPLOAD_FILE_ABORTED) {
         otaLastError = "Upload aborted by client";
         otaLastSuccess = false;
         otaUploadEnded = false;
-        Update.abort();
+        otaLastErrorCode = (int)ESP_ERR_INVALID_STATE;
+        if (otaHandle != 0) {
+          esp_ota_abort(otaHandle);
+          otaHandle = 0;
+        }
       } else if (upload.status == UPLOAD_FILE_END) {
         otaUploadEnded = true;
-        bool finalized = otaSizeKnown ? Update.end() : Update.end(true);
-        if (!finalized) {
-          otaLastError = String(Update.errorString());
+        if (otaHandle == 0 || otaTargetPart == NULL) {
+          otaLastError = "OTA end without valid handle";
+          otaLastErrorCode = (int)ESP_FAIL;
           otaLastSuccess = false;
-          Update.printError(Serial);
         } else {
-          otaLastSuccess = true;
+          esp_err_t err = esp_ota_end(otaHandle);
+          if (err != ESP_OK) {
+            otaLastErrorCode = (int)err;
+            otaLastError = otaErrorToString(err);
+            otaLastSuccess = false;
+            Serial.printf("[OTA] end failed: %s (%d)\n", otaLastError.c_str(), otaLastErrorCode);
+          } else {
+            err = esp_ota_set_boot_partition(otaTargetPart);
+            if (err != ESP_OK) {
+              otaLastErrorCode = (int)err;
+              otaLastError = otaErrorToString(err);
+              otaLastSuccess = false;
+              Serial.printf("[OTA] activate failed: %s (%d)\n", otaLastError.c_str(), otaLastErrorCode);
+            } else {
+              otaLastSuccess = true;
+            }
+          }
+          otaHandle = 0;
         }
       }
     });
@@ -988,7 +986,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.7</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.8</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
