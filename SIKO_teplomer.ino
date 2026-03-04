@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <math.h>
 
-#define FW_VERSION "1.0.1"
+#define FW_VERSION "1.0.2"
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -902,7 +902,11 @@ void setup() {
       HTTPUpload& upload = server.upload();
       if (upload.status == UPLOAD_FILE_START) {
         otaLastError = "";
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        if (upload.totalSize == 0) {
+          otaLastError = "Empty upload";
+          return;
+        }
+        if (!Update.begin(upload.totalSize, U_FLASH)) {
           otaLastError = otaErrorToString(Update.getError());
           Update.printError(Serial);
         }
@@ -915,7 +919,7 @@ void setup() {
         otaLastError = "Upload aborted by client";
         Update.abort();
       } else if (upload.status == UPLOAD_FILE_END) {
-        if (!Update.end(true)) {
+        if (!Update.end()) {
           otaLastError = otaErrorToString(Update.getError());
           Update.printError(Serial);
         }
@@ -951,7 +955,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.1</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.2</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
