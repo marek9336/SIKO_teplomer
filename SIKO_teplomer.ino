@@ -13,7 +13,7 @@
 #include <esp_err.h>
 #include <Preferences.h>
 
-#define FW_VERSION "1.0.13"
+#define FW_VERSION "1.0.14"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #define THERMISTOR_PIN 2
@@ -34,7 +34,7 @@ float minuteAvgTemp = NAN;  // tohle se bude posílat přes API a zobrazovat
 #define MIN_HISTORY_MINUTES 180  // držíme 3 hodiny do zásoby
 float minuteHistory[MIN_HISTORY_MINUTES];
 int minuteHistoryIdx = 0;
-bool minuteHistoryPrimed = false;  // až naplníme aspoň 60 vzorků
+int minuteHistoryCount = 0;
 // --- Meme obrázky z GitHubu ---
 #ifndef GITHUB_BASE_URL
 #define GITHUB_BASE_URL "https://raw.githubusercontent.com/marek9336/SIKO_teplomer/refs/heads/main/Pictures/"
@@ -701,6 +701,7 @@ void handleClearHistory() {
 
   for (int i = 0; i < MIN_HISTORY_MINUTES; i++) minuteHistory[i] = NAN;
   minuteHistoryIdx = 0;
+  minuteHistoryCount = 0;
   minuteSum = 0.0;
   minuteSamples = 0;
   minuteAvgTemp = temperature;
@@ -712,21 +713,19 @@ void handleClearHistory() {
 void pushMinuteHistory(float v) {
   minuteHistory[minuteHistoryIdx] = v;
   minuteHistoryIdx = (minuteHistoryIdx + 1) % MIN_HISTORY_MINUTES;
+  if (minuteHistoryCount < MIN_HISTORY_MINUTES) minuteHistoryCount++;
 }
 
 float getDelta1h() {
-  // potřebujeme 60 minut starý vzorek
   const int back = 60;
-  // zjisti, kolik platných vzorků máme
-  int valid = 0;
-  for (int i = 0; i < MIN_HISTORY_MINUTES; i++)
-    if (!isnan(minuteHistory[i])) valid++;
-  if (valid < back + 1) return NAN;
+  if (minuteHistoryCount < back + 1) return NAN;
 
-  int idxPast = (minuteHistoryIdx - back - 1 + MIN_HISTORY_MINUTES) % MIN_HISTORY_MINUTES;
+  int idxLatest = (minuteHistoryIdx - 1 + MIN_HISTORY_MINUTES) % MIN_HISTORY_MINUTES;
+  int idxPast = (idxLatest - back + MIN_HISTORY_MINUTES) % MIN_HISTORY_MINUTES;
+  float latest = minuteHistory[idxLatest];
   float past = minuteHistory[idxPast];
-  if (isnan(past) || isnan(minuteAvgTemp)) return NAN;
-  return minuteAvgTemp - past;
+  if (isnan(latest) || isnan(past)) return NAN;
+  return latest - past;
 }
 
 // --- HTTPS fetch helper (bez certifikátu pro jednoduchost) ---
@@ -848,6 +847,7 @@ void setup() {
   loadURLConfig();
   readTemperature();
   for (int i = 0; i < MIN_HISTORY_MINUTES; i++) minuteHistory[i] = NAN;
+  minuteHistoryCount = 0;
   minuteAvgTemp = temperature;  // do prvního commit-u ukaž aktuální
   lastMinuteCommit = millis();  // start 1min okna
 
@@ -1068,7 +1068,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.13</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.14</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
