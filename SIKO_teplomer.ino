@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <math.h>
 
-#define FW_VERSION "1.0.3"
+#define FW_VERSION "1.0.4"
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -96,6 +96,8 @@ float btcUSD = NAN, btcCZK = NAN;
 unsigned long lastQuoteFetch = 0;
 String cachedQuote = "";
 String otaLastError = "";
+bool otaLastSuccess = false;
+bool otaUploadStarted = false;
 
 // --- EEPROM ---
 #define EEPROM_COMFORT_MIN 0
@@ -906,14 +908,14 @@ void setup() {
   server.on(
     "/update", HTTP_POST,
     []() {
-      bool ok = !Update.hasError() && otaLastError.length() == 0;
+      bool ok = otaUploadStarted && otaLastSuccess && otaLastError.length() == 0;
       StaticJsonDocument<256> out;
       out["ok"] = ok;
       out["version"] = FW_VERSION;
       if (ok) {
         out["message"] = "OTA OK, restartuji...";
       } else {
-        if (otaLastError.length() == 0) otaLastError = otaErrorToString(Update.getError());
+        if (otaLastError.length() == 0) otaLastError = "Update finalize failed";
         out["message"] = "OTA FAIL";
         out["error"] = otaLastError;
         out["error_code"] = (int)Update.getError();
@@ -929,6 +931,8 @@ void setup() {
       HTTPUpload& upload = server.upload();
       if (upload.status == UPLOAD_FILE_START) {
         otaLastError = "";
+        otaLastSuccess = false;
+        otaUploadStarted = true;
         if (upload.totalSize == 0) {
           otaLastError = "Empty upload";
           return;
@@ -944,11 +948,15 @@ void setup() {
         }
       } else if (upload.status == UPLOAD_FILE_ABORTED) {
         otaLastError = "Upload aborted by client";
+        otaLastSuccess = false;
         Update.abort();
       } else if (upload.status == UPLOAD_FILE_END) {
         if (!Update.end()) {
           otaLastError = otaErrorToString(Update.getError());
+          otaLastSuccess = false;
           Update.printError(Serial);
+        } else {
+          otaLastSuccess = true;
         }
       }
     });
@@ -982,7 +990,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.3</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.4</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
