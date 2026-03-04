@@ -13,7 +13,7 @@
 #include <esp_err.h>
 #include <Preferences.h>
 
-#define FW_VERSION "1.0.15"
+#define FW_VERSION "1.0.16"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #define THERMISTOR_PIN 2
@@ -122,6 +122,7 @@ String otaRunningLabel = "";
 Preferences prefs;
 
 float getAveragedTemperature();
+float getDelta1h();
 
 // --- EEPROM ---
 #define EEPROM_COMFORT_MIN 0
@@ -162,7 +163,8 @@ String selectMemeURL() {
 // --- HTML ---
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html><head>
-<meta charset="UTF-8"><title>IT teploměr 🐥</title>
+<meta charset="UTF-8"><title>IT teploměr - --°C</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='50'%3E%F0%9F%90%A5%3C/text%3E%3C/svg%3E">
 <style>
   body {
     background-color: #1e1e1e;
@@ -228,6 +230,7 @@ async function updateData() {
     // minutový průměr
     const temp = (t.temperature !== undefined && !isNaN(t.temperature)) ? Number(t.temperature) : NaN;
     document.getElementById("temperature").innerText = isNaN(temp) ? '--' : temp.toFixed(1);
+    document.title = "IT teploměr - " + (isNaN(temp) ? "--" : temp.toFixed(1)) + "°C";
 
     // delta 1h
     const d = (t.delta1h !== undefined && !isNaN(t.delta1h)) ? Number(t.delta1h) : NaN;
@@ -238,7 +241,10 @@ async function updateData() {
     const m = await fetch("/api/meme").then(r => r.json());
     document.getElementById("meme").src = m.meme;
 
-  } catch (e) { console.error("Chyba:", e); }
+  } catch (e) {
+    document.title = "IT teploměr - --°C";
+    console.error("Chyba:", e);
+  }
 }
 setInterval(updateData, 5000); updateData();  // klidně nech 5 s, mění se jen když /api/temp “commitne” minutu
 
@@ -1166,7 +1172,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.15</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.16</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
