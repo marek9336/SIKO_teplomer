@@ -13,8 +13,15 @@
 #include <esp_err.h>
 #include <Preferences.h>
 
-#define FW_VERSION "1.0.16"
+#define FW_VERSION "1.0.17"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
+
+#ifndef WEB_ADMIN_USER
+#define WEB_ADMIN_USER "admin"
+#endif
+#ifndef WEB_ADMIN_PASS
+#define WEB_ADMIN_PASS "change-me"
+#endif
 
 #define THERMISTOR_PIN 2
 const float seriesResistor = 10000.0;
@@ -133,6 +140,12 @@ float getDelta1h();
 String otaErrorToString(esp_err_t err) {
   if (err == ESP_OK) return "OK";
   return String(esp_err_to_name(err));
+}
+
+bool requireAuth() {
+  if (server.authenticate(WEB_ADMIN_USER, WEB_ADMIN_PASS)) return true;
+  server.requestAuthentication(BASIC_AUTH, "IT teplomer settings");
+  return false;
 }
 
 String selectMemeURL() {
@@ -716,6 +729,7 @@ void handleMeme() {
 }
 
 void handleSetComfort() {
+  if (!requireAuth()) return;
   if (server.method() == HTTP_POST) {
     StaticJsonDocument<200> doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
@@ -733,6 +747,7 @@ void handleSetComfort() {
 }
 
 void handleSetConfig() {
+  if (!requireAuth()) return;
   if (server.method() == HTTP_POST) {
     StaticJsonDocument<512> doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
@@ -777,6 +792,7 @@ void handleSetConfig() {
 }
 
 void handleGetConfig() {
+  if (!requireAuth()) return;
   StaticJsonDocument<512> doc;
   doc["comfortMin"] = comfortMin;
   doc["comfortMax"] = comfortMax;
@@ -793,6 +809,7 @@ void handleGetConfig() {
 }
 
 void handleClearHistory() {
+  if (!requireAuth()) return;
   if (server.method() != HTTP_POST) {
     server.send(405, "application/json", "{\"error\":\"Method Not Allowed\"}");
     return;
@@ -999,6 +1016,7 @@ void setup() {
   server.on(
     "/update", HTTP_POST,
     []() {
+      if (!requireAuth()) return;
       bool ok = otaUploadStarted && otaUploadEnded && otaLastSuccess && otaLastError.length() == 0;
       StaticJsonDocument<256> out;
       out["ok"] = ok;
@@ -1042,6 +1060,10 @@ void setup() {
       otaRunningLabel = "";
     },
     []() {
+      if (!server.authenticate(WEB_ADMIN_USER, WEB_ADMIN_PASS)) {
+        server.requestAuthentication(BASIC_AUTH, "IT teplomer settings");
+        return;
+      }
       HTTPUpload& upload = server.upload();
       if (upload.status == UPLOAD_FILE_START) {
         otaLastError = "";
@@ -1147,6 +1169,7 @@ void setup() {
 
   // /settings
   server.on("/settings", HTTP_GET, []() {
+    if (!requireAuth()) return;
     String html = R"rawliteral(
 <!DOCTYPE html><html><head><meta charset='UTF-8'><title>Nastavení</title>
 <style>
@@ -1172,7 +1195,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.16</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.17</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
