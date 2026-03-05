@@ -13,7 +13,7 @@
 #include <esp_err.h>
 #include <Preferences.h>
 
-#define FW_VERSION "1.0.17"
+#define FW_VERSION "1.0.18"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #ifndef WEB_ADMIN_USER
@@ -127,6 +127,8 @@ int otaFirstByte = -1;
 String otaTargetLabel = "";
 String otaRunningLabel = "";
 Preferences prefs;
+String webAdminUser = String(WEB_ADMIN_USER);
+String webAdminPass = String(WEB_ADMIN_PASS);
 
 float getAveragedTemperature();
 float getDelta1h();
@@ -143,7 +145,7 @@ String otaErrorToString(esp_err_t err) {
 }
 
 bool requireAuth() {
-  if (server.authenticate(WEB_ADMIN_USER, WEB_ADMIN_PASS)) return true;
+  if (server.authenticate(webAdminUser.c_str(), webAdminPass.c_str())) return true;
   server.requestAuthentication(BASIC_AUTH, "IT teplomer settings");
   return false;
 }
@@ -592,6 +594,25 @@ void loadURLConfig() {
   tempAvgCustomSec = customSec;
 }
 
+void saveAuthConfig() {
+  if (!prefs.begin("authcfg", false)) return;
+  prefs.putString("user", webAdminUser);
+  prefs.putString("pass", webAdminPass);
+  prefs.end();
+}
+
+void loadAuthConfig() {
+  if (!prefs.begin("authcfg", true)) return;
+  String u = prefs.getString("user", String(WEB_ADMIN_USER));
+  String p = prefs.getString("pass", String(WEB_ADMIN_PASS));
+  prefs.end();
+
+  u.trim();
+  p.trim();
+  if (u.length() > 0) webAdminUser = u;
+  if (p.length() > 0) webAdminPass = p;
+}
+
 // --- Čtení teploty ---
 void readTemperature() {
   float rawTemp;
@@ -763,10 +784,14 @@ void handleSetConfig() {
     String newOdpocty = doc["odpoctyURL"] | odpoctyURL;
     String newAvgMode = doc["tempAvgMode"] | tempAvgMode;
     int newCustomSec = doc["tempAvgCustomSec"] | tempAvgCustomSec;
+    String newAdminUser = doc["adminUser"] | webAdminUser;
+    String newAdminPass = doc["adminPass"] | webAdminPass;
     newMeme.trim();
     newCitace.trim();
     newOdpocty.trim();
     newAvgMode.trim();
+    newAdminUser.trim();
+    newAdminPass.trim();
     if (newMeme.length() > 0) memeBaseURL = newMeme;
     if (newCitace.length() > 0) citaceURL = newCitace;
     if (newOdpocty.length() > 0) odpoctyURL = newOdpocty;
@@ -776,6 +801,8 @@ void handleSetConfig() {
     if (newCustomSec < 1) newCustomSec = 1;
     if (newCustomSec > 86400) newCustomSec = 86400;
     tempAvgCustomSec = newCustomSec;
+    if (newAdminUser.length() > 0) webAdminUser = newAdminUser;
+    if (newAdminPass.length() > 0) webAdminPass = newAdminPass;
 
     // Při změně URL vynulujeme cache, ať se nové zdroje načtou hned.
     cachedQuote = "";
@@ -785,6 +812,7 @@ void handleSetConfig() {
 
     saveComfortToEEPROM();
     saveURLConfig();
+    saveAuthConfig();
     server.send(200, "application/json", "{\"status\":\"updated\"}");
   } else {
     server.send(405, "application/json", "{\"error\":\"Method Not Allowed\"}");
@@ -803,6 +831,8 @@ void handleGetConfig() {
   doc["odpoctyURL"] = odpoctyURL;
   doc["tempAvgMode"] = tempAvgMode;
   doc["tempAvgCustomSec"] = tempAvgCustomSec;
+  doc["adminUser"] = webAdminUser;
+  doc["adminPass"] = webAdminPass;
   String json;
   serializeJson(doc, json);
   server.send(200, "application/json", json);
@@ -965,6 +995,7 @@ void setup() {
   sensors.begin();
   loadComfortFromEEPROM();
   loadURLConfig();
+  loadAuthConfig();
   readTemperature();
   for (int i = 0; i < MIN_HISTORY_MINUTES; i++) minuteHistory[i] = NAN;
   minuteHistoryCount = 0;
@@ -1060,7 +1091,7 @@ void setup() {
       otaRunningLabel = "";
     },
     []() {
-      if (!server.authenticate(WEB_ADMIN_USER, WEB_ADMIN_PASS)) {
+      if (!server.authenticate(webAdminUser.c_str(), webAdminPass.c_str())) {
         server.requestAuthentication(BASIC_AUTH, "IT teplomer settings");
         return;
       }
@@ -1195,7 +1226,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.17</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.18</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1245,6 +1276,14 @@ void setup() {
       <div class="row">
         <label>URL odpočtů (ODP_URL)</label>
         <input type="text" name="odpoctyURL" style="width:100%;max-width:720px;">
+      </div>
+      <div class="row">
+        <label>Admin uživatel (Basic Auth)</label>
+        <input type="text" name="adminUser" style="width:100%;max-width:320px;">
+      </div>
+      <div class="row">
+        <label>Admin heslo (Basic Auth)</label>
+        <input type="text" name="adminPass" style="width:100%;max-width:320px;">
       </div>
       <div class="ota-actions">
         <button type="submit">💾 Uložit změny</button>
