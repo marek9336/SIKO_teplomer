@@ -13,7 +13,7 @@
 #include <esp_err.h>
 #include <Preferences.h>
 
-#define FW_VERSION "1.0.20"
+#define FW_VERSION "1.0.21"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #ifndef WEB_ADMIN_USER
@@ -1306,7 +1306,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.20</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.21</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1522,6 +1522,7 @@ const otaLog = document.getElementById("otaLog");
 const otaBtn = document.getElementById("otaBtn");
 const toast = document.getElementById("toast");
 let lastRawTempForHelp = NaN;
+let rawSamples5s = [];
 
 function logOTA(msg){
   otaLog.textContent += "\n" + msg;
@@ -1545,14 +1546,52 @@ function renderCalibrationHelp(){
   if (!live || !calibInput) return;
   const cal = Number(calibInput.value);
   if (!Number.isFinite(lastRawTempForHelp) || !Number.isFinite(cal)) {
-    live.textContent = "Aktuálně: surová -- °C + kalibrace -- °C = -- °C";
+    live.textContent = "Aktuálně (raw průměr 5 s): surová -- °C + kalibrace -- °C = -- °C";
     return;
   }
   const out = lastRawTempForHelp + cal;
-  live.textContent = "Aktuálně: surová " + lastRawTempForHelp.toFixed(1) + " °C + kalibrace " + cal.toFixed(1) + " °C = " + out.toFixed(1) + " °C";
+  live.textContent = "Aktuálně (raw průměr 5 s): surová " + lastRawTempForHelp.toFixed(1) + " °C + kalibrace " + cal.toFixed(1) + " °C = " + out.toFixed(1) + " °C";
 }
 
 document.querySelector('input[name="calibration"]').addEventListener("input", renderCalibrationHelp);
+
+function pushRawSample(v){
+  const now = Date.now();
+  rawSamples5s.push({ ts: now, value: v });
+  rawSamples5s = rawSamples5s.filter(s => (now - s.ts) <= 5000);
+}
+
+function calcRaw5sAvg(){
+  if (!rawSamples5s.length) return NaN;
+  let sum = 0;
+  let cnt = 0;
+  for (const s of rawSamples5s) {
+    if (Number.isFinite(s.value)) {
+      sum += s.value;
+      cnt++;
+    }
+  }
+  if (!cnt) return NaN;
+  return sum / cnt;
+}
+
+function sampleRawForCalibration(){
+  fetch('/api/temp?ts=' + Date.now(), { cache: "no-store" })
+    .then(r => r.json())
+    .then(t => {
+      const raw = Number(t.rawTemperature);
+      if (Number.isFinite(raw) && raw > -100 && raw < 150) {
+        pushRawSample(raw);
+      }
+    })
+    .catch(() => {});
+}
+
+function refreshCalibrationLiveFrom5sAvg(){
+  const avgRaw = calcRaw5sAvg();
+  if (Number.isFinite(avgRaw)) lastRawTempForHelp = avgRaw;
+  renderCalibrationHelp();
+}
 
 function waitForDeviceAndReload(){
   const maxAttempts = 60; // ~60 s
@@ -1657,12 +1696,11 @@ otaForm.addEventListener("submit", function(e){
   xhr.send(formData);
 });
 
-// Nápověda kalibrace: načti aktuální raw teplotu
-fetch('/api/temp').then(r => r.json()).then(t => {
-  const raw = Number(t.rawTemperature);
-  if (Number.isFinite(raw) && raw > -100) lastRawTempForHelp = raw;
-  renderCalibrationHelp();
-}).catch(() => renderCalibrationHelp());
+// Nápověda kalibrace: sběr raw každou 1 s, přepočet labelu každých 5 s (průměr za posledních 5 s)
+sampleRawForCalibration();
+setInterval(sampleRawForCalibration, 1000);
+refreshCalibrationLiveFrom5sAvg();
+setInterval(refreshCalibrationLiveFrom5sAvg, 5000);
 </script>
 </body></html>
 )rawliteral";
