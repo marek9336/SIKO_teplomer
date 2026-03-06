@@ -13,7 +13,7 @@
 #include <esp_err.h>
 #include <Preferences.h>
 
-#define FW_VERSION "1.0.18"
+#define FW_VERSION "1.0.19"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #ifndef WEB_ADMIN_USER
@@ -701,12 +701,14 @@ float getAveragedTemperature() {
 
 // --- API handlery ---
 void handleTemp() {
-  StaticJsonDocument<192> doc;
+  StaticJsonDocument<256> doc;
   int analogRaw = useNTC ? analogRead(THERMISTOR_PIN) : -1;
   float tAvg = getAveragedTemperature();
   doc["temperature"] = isnan(tAvg) ? -999.0 : tAvg;
   doc["delta1h"] = getDelta1h();                                       // může být NaN
   doc["calibration"] = calibration;
+  doc["rawTemperature"] = isnan(lastRawTemperature) ? -999.0 : lastRawTemperature;
+  doc["calibratedTemperature"] = isnan(temperature) ? -999.0 : temperature;
   doc["sensorType"] = useNTC ? "ntc" : "ds18b20";
   doc["analogRaw"] = analogRaw;
   String json;
@@ -1226,7 +1228,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.18</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.19</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1242,6 +1244,8 @@ void setup() {
       <div class="row">
         <label>Kalibrace</label>
         <input type="number" step="0.1" name="calibration">
+        <div class="muted">Kalibrace je offset v °C: <strong>výsledná teplota = surová teplota + kalibrace</strong>.</div>
+        <div class="muted" id="calibrationLive">Aktuálně: surová -- °C + kalibrace -- °C = -- °C</div>
       </div>
       <div class="row">
         <label>Typ čidla (doporučeno analog/NTC)</label>
@@ -1360,6 +1364,7 @@ const otaProgressText = document.getElementById("otaProgressText");
 const otaLog = document.getElementById("otaLog");
 const otaBtn = document.getElementById("otaBtn");
 const toast = document.getElementById("toast");
+let lastRawTempForHelp = NaN;
 
 function logOTA(msg){
   otaLog.textContent += "\n" + msg;
@@ -1376,6 +1381,21 @@ if (localStorage.getItem("ota_update_success") === "1") {
   localStorage.removeItem("ota_update_success");
   showToast("Update úspěšný");
 }
+
+function renderCalibrationHelp(){
+  const live = document.getElementById("calibrationLive");
+  const calibInput = document.querySelector('input[name="calibration"]');
+  if (!live || !calibInput) return;
+  const cal = Number(calibInput.value);
+  if (!Number.isFinite(lastRawTempForHelp) || !Number.isFinite(cal)) {
+    live.textContent = "Aktuálně: surová -- °C + kalibrace -- °C = -- °C";
+    return;
+  }
+  const out = lastRawTempForHelp + cal;
+  live.textContent = "Aktuálně: surová " + lastRawTempForHelp.toFixed(1) + " °C + kalibrace " + cal.toFixed(1) + " °C = " + out.toFixed(1) + " °C";
+}
+
+document.querySelector('input[name="calibration"]').addEventListener("input", renderCalibrationHelp);
 
 function waitForDeviceAndReload(){
   const maxAttempts = 60; // ~60 s
@@ -1479,6 +1499,13 @@ otaForm.addEventListener("submit", function(e){
 
   xhr.send(formData);
 });
+
+// Nápověda kalibrace: načti aktuální raw teplotu
+fetch('/api/temp').then(r => r.json()).then(t => {
+  const raw = Number(t.rawTemperature);
+  if (Number.isFinite(raw) && raw > -100) lastRawTempForHelp = raw;
+  renderCalibrationHelp();
+}).catch(() => renderCalibrationHelp());
 </script>
 </body></html>
 )rawliteral";
