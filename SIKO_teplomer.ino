@@ -13,7 +13,7 @@
 #include <esp_err.h>
 #include <Preferences.h>
 
-#define FW_VERSION "1.0.19"
+#define FW_VERSION "1.0.20"
 #define FW_BUILD_TARGET "esp32:esp32:esp32c3"
 
 #ifndef WEB_ADMIN_USER
@@ -24,11 +24,20 @@
 #endif
 
 #define THERMISTOR_PIN 2
-const float seriesResistor = 10000.0;
-const float nominalResistance = 10000.0;
-const float nominalTemperature = 25.0;
-const float bCoefficient = 3950.0;
-const int adcMax = 4095;
+#define DEFAULT_NTC_SERIES_RESISTOR 10000.0f
+#define DEFAULT_NTC_NOMINAL_RESISTANCE 10000.0f
+#define DEFAULT_NTC_NOMINAL_TEMPERATURE 25.0f
+#define DEFAULT_NTC_B_COEFFICIENT 3950.0f
+#define DEFAULT_NTC_VREF 3.3f
+#define DEFAULT_NTC_ADC_MAX 4095
+
+float ntcSeriesResistor = DEFAULT_NTC_SERIES_RESISTOR;
+float ntcNominalResistance = DEFAULT_NTC_NOMINAL_RESISTANCE;
+float ntcNominalTemperature = DEFAULT_NTC_NOMINAL_TEMPERATURE;
+float ntcBCoefficient = DEFAULT_NTC_B_COEFFICIENT;
+float ntcVRef = DEFAULT_NTC_VREF;
+int ntcAdcMax = DEFAULT_NTC_ADC_MAX;
+String ntcWiring = "pullup"; // pullup: Rfix->VCC, NTC->GND ; pulldown: NTC->VCC, Rfix->GND
 bool useNTC = true;
 
 // --- 1min průměr pro zobrazení/API ---
@@ -60,18 +69,28 @@ String odpoctyCache;
 // --- NTC teploměr ---
 float readNTCTemperature() {
   int analogValue = analogRead(THERMISTOR_PIN);
-  const float vRef = 3.3;
-  float voltage = ((float)analogValue / adcMax) * vRef;
-  float resistance = (voltage * seriesResistor) / (vRef - voltage);
+  if (analogValue <= 0 || analogValue >= ntcAdcMax) {
+    Serial.println("[NTC] Varování, ADC mimo rozsah");
+    return -999.0;
+  }
+  float voltage = ((float)analogValue / (float)ntcAdcMax) * ntcVRef;
+  float resistance;
+  if (ntcWiring == "pulldown") {
+    // NTC -> VCC, fixed resistor -> GND, měření ve středu děliče
+    resistance = ntcSeriesResistor * ((ntcVRef / voltage) - 1.0f);
+  } else {
+    // fixed resistor -> VCC, NTC -> GND (původní zapojení)
+    resistance = (voltage * ntcSeriesResistor) / (ntcVRef - voltage);
+  }
   if (resistance <= 0) {
     Serial.println("[NTC] Varování, chyba odporu");
     return -999.0;
   }
   float steinhart;
-  steinhart = resistance / nominalResistance;
+  steinhart = resistance / ntcNominalResistance;
   steinhart = log(steinhart);
-  steinhart /= bCoefficient;
-  steinhart += 1.0 / (nominalTemperature + 273.15);
+  steinhart /= ntcBCoefficient;
+  steinhart += 1.0 / (ntcNominalTemperature + 273.15);
   steinhart = 1.0 / steinhart;
   float celsius = steinhart - 273.15;
   Serial.print("[NTC] Raw analog: ");
@@ -613,6 +632,38 @@ void loadAuthConfig() {
   if (p.length() > 0) webAdminPass = p;
 }
 
+void saveSensorConfig() {
+  if (!prefs.begin("sensorcfg", false)) return;
+  prefs.putFloat("ntc_series", ntcSeriesResistor);
+  prefs.putFloat("ntc_nominal_r", ntcNominalResistance);
+  prefs.putFloat("ntc_nominal_t", ntcNominalTemperature);
+  prefs.putFloat("ntc_b", ntcBCoefficient);
+  prefs.putFloat("ntc_vref", ntcVRef);
+  prefs.putInt("ntc_adcmax", ntcAdcMax);
+  prefs.putString("ntc_wiring", ntcWiring);
+  prefs.end();
+}
+
+void loadSensorConfig() {
+  if (!prefs.begin("sensorcfg", true)) return;
+  ntcSeriesResistor = prefs.getFloat("ntc_series", DEFAULT_NTC_SERIES_RESISTOR);
+  ntcNominalResistance = prefs.getFloat("ntc_nominal_r", DEFAULT_NTC_NOMINAL_RESISTANCE);
+  ntcNominalTemperature = prefs.getFloat("ntc_nominal_t", DEFAULT_NTC_NOMINAL_TEMPERATURE);
+  ntcBCoefficient = prefs.getFloat("ntc_b", DEFAULT_NTC_B_COEFFICIENT);
+  ntcVRef = prefs.getFloat("ntc_vref", DEFAULT_NTC_VREF);
+  ntcAdcMax = prefs.getInt("ntc_adcmax", DEFAULT_NTC_ADC_MAX);
+  ntcWiring = prefs.getString("ntc_wiring", "pullup");
+  prefs.end();
+
+  if (ntcSeriesResistor <= 0) ntcSeriesResistor = DEFAULT_NTC_SERIES_RESISTOR;
+  if (ntcNominalResistance <= 0) ntcNominalResistance = DEFAULT_NTC_NOMINAL_RESISTANCE;
+  if (ntcNominalTemperature < -50 || ntcNominalTemperature > 150) ntcNominalTemperature = DEFAULT_NTC_NOMINAL_TEMPERATURE;
+  if (ntcBCoefficient < 1000 || ntcBCoefficient > 10000) ntcBCoefficient = DEFAULT_NTC_B_COEFFICIENT;
+  if (ntcVRef <= 0.1f || ntcVRef > 5.0f) ntcVRef = DEFAULT_NTC_VREF;
+  if (ntcAdcMax < 255 || ntcAdcMax > 65535) ntcAdcMax = DEFAULT_NTC_ADC_MAX;
+  if (ntcWiring != "pullup" && ntcWiring != "pulldown") ntcWiring = "pullup";
+}
+
 // --- Čtení teploty ---
 void readTemperature() {
   float rawTemp;
@@ -772,7 +823,7 @@ void handleSetComfort() {
 void handleSetConfig() {
   if (!requireAuth()) return;
   if (server.method() == HTTP_POST) {
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<1024> doc;
     DeserializationError err = deserializeJson(doc, server.arg("plain"));
     if (err) return server.send(400, "application/json", "{\"error\":\"Bad JSON\"}");
     comfortMin = doc["comfortMin"] | comfortMin;
@@ -806,6 +857,24 @@ void handleSetConfig() {
     if (newAdminUser.length() > 0) webAdminUser = newAdminUser;
     if (newAdminPass.length() > 0) webAdminPass = newAdminPass;
 
+    float newNtcSeries = doc["ntcSeriesResistor"] | ntcSeriesResistor;
+    float newNtcNominalR = doc["ntcNominalResistance"] | ntcNominalResistance;
+    float newNtcNominalT = doc["ntcNominalTemperature"] | ntcNominalTemperature;
+    float newNtcB = doc["ntcBCoefficient"] | ntcBCoefficient;
+    float newNtcVRef = doc["ntcVRef"] | ntcVRef;
+    int newNtcAdcMax = doc["ntcAdcMax"] | ntcAdcMax;
+    String newNtcWiring = doc["ntcWiring"] | ntcWiring;
+    newNtcWiring.trim();
+    newNtcWiring.toLowerCase();
+
+    if (newNtcSeries > 1.0f && newNtcSeries <= 1000000.0f) ntcSeriesResistor = newNtcSeries;
+    if (newNtcNominalR > 1.0f && newNtcNominalR <= 1000000.0f) ntcNominalResistance = newNtcNominalR;
+    if (newNtcNominalT >= -50.0f && newNtcNominalT <= 150.0f) ntcNominalTemperature = newNtcNominalT;
+    if (newNtcB >= 1000.0f && newNtcB <= 10000.0f) ntcBCoefficient = newNtcB;
+    if (newNtcVRef >= 0.1f && newNtcVRef <= 5.0f) ntcVRef = newNtcVRef;
+    if (newNtcAdcMax >= 255 && newNtcAdcMax <= 65535) ntcAdcMax = newNtcAdcMax;
+    if (newNtcWiring == "pullup" || newNtcWiring == "pulldown") ntcWiring = newNtcWiring;
+
     // Při změně URL vynulujeme cache, ať se nové zdroje načtou hned.
     cachedQuote = "";
     odpoctyCache = "";
@@ -815,6 +884,7 @@ void handleSetConfig() {
     saveComfortToEEPROM();
     saveURLConfig();
     saveAuthConfig();
+    saveSensorConfig();
     server.send(200, "application/json", "{\"status\":\"updated\"}");
   } else {
     server.send(405, "application/json", "{\"error\":\"Method Not Allowed\"}");
@@ -823,7 +893,7 @@ void handleSetConfig() {
 
 void handleGetConfig() {
   if (!requireAuth()) return;
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
   doc["comfortMin"] = comfortMin;
   doc["comfortMax"] = comfortMax;
   doc["calibration"] = calibration;
@@ -835,6 +905,13 @@ void handleGetConfig() {
   doc["tempAvgCustomSec"] = tempAvgCustomSec;
   doc["adminUser"] = webAdminUser;
   doc["adminPass"] = webAdminPass;
+  doc["ntcSeriesResistor"] = ntcSeriesResistor;
+  doc["ntcNominalResistance"] = ntcNominalResistance;
+  doc["ntcNominalTemperature"] = ntcNominalTemperature;
+  doc["ntcBCoefficient"] = ntcBCoefficient;
+  doc["ntcVRef"] = ntcVRef;
+  doc["ntcAdcMax"] = ntcAdcMax;
+  doc["ntcWiring"] = ntcWiring;
   String json;
   serializeJson(doc, json);
   server.send(200, "application/json", json);
@@ -998,6 +1075,7 @@ void setup() {
   loadComfortFromEEPROM();
   loadURLConfig();
   loadAuthConfig();
+  loadSensorConfig();
   readTemperature();
   for (int i = 0; i < MIN_HISTORY_MINUTES; i++) minuteHistory[i] = NAN;
   minuteHistoryCount = 0;
@@ -1228,7 +1306,7 @@ void setup() {
 </style></head><body>
 <div class="wrap">
   <h1 class="title"><a href='/' style='text-decoration:none;color:#ffd700;'>🐥</a> Nastavení</h1>
-  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.19</strong></div>
+  <div class="version">Aktuální verze: <strong id="fwVersion">1.0.20</strong></div>
 
   <div class="card">
     <h2 class="title">Konfigurace měření</h2>
@@ -1236,10 +1314,12 @@ void setup() {
       <div class="row">
         <label>Komfort Min</label>
         <input type="number" step="0.1" name="comfortMin">
+        <div class="muted">Dolní hranice komfortu pro vyhodnocení stavu teploty.</div>
       </div>
       <div class="row">
         <label>Komfort Max</label>
         <input type="number" step="0.1" name="comfortMax">
+        <div class="muted">Horní hranice komfortu pro vyhodnocení stavu teploty.</div>
       </div>
       <div class="row">
         <label>Kalibrace</label>
@@ -1253,6 +1333,45 @@ void setup() {
           <option value="ds18b20">DS18B20</option>
           <option value="ntc">NTC (analog)</option>
         </select>
+        <div class="muted">Vyber typ fyzicky připojeného čidla. Při špatné volbě budou hodnoty nesmyslné.</div>
+      </div>
+      <div id="ntcConfig" class="row">
+        <label>NTC zapojení děliče</label>
+        <select name="ntcWiring">
+          <option value="pullup">Pull-up (Rfix na VCC, NTC na GND)</option>
+          <option value="pulldown">Pull-down (NTC na VCC, Rfix na GND)</option>
+        </select>
+        <div class="muted">Musí odpovídat skutečnému zapojení, jinak teplota vyjde chybně.</div>
+      </div>
+      <div id="ntcSeriesRow" class="row">
+        <label>NTC pevný rezistor (ohm)</label>
+        <input type="number" min="1" step="1" name="ntcSeriesResistor">
+        <div class="muted">Hodnota pevného rezistoru v děliči (typicky 10000).</div>
+      </div>
+      <div id="ntcNominalRRow" class="row">
+        <label>NTC nominální odpor při T0 (ohm)</label>
+        <input type="number" min="1" step="1" name="ntcNominalResistance">
+        <div class="muted">Typicky 10000 ohm při 25 °C.</div>
+      </div>
+      <div id="ntcNominalTRow" class="row">
+        <label>NTC nominální teplota T0 (°C)</label>
+        <input type="number" step="0.1" name="ntcNominalTemperature">
+        <div class="muted">Referenční teplota pro nominální odpor, běžně 25 °C.</div>
+      </div>
+      <div id="ntcBRow" class="row">
+        <label>NTC B koeficient</label>
+        <input type="number" min="1000" max="10000" step="1" name="ntcBCoefficient">
+        <div class="muted">Beta parametr z datasheetu NTC (často 3950).</div>
+      </div>
+      <div id="ntcVRefRow" class="row">
+        <label>ADC referenční napětí (V)</label>
+        <input type="number" min="0.1" max="5" step="0.01" name="ntcVRef">
+        <div class="muted">Pro ESP32-C3 typicky 3.30 V (podle napájení a kalibrace ADC).</div>
+      </div>
+      <div id="ntcAdcMaxRow" class="row">
+        <label>ADC maximum</label>
+        <input type="number" min="255" max="65535" step="1" name="ntcAdcMax">
+        <div class="muted">Pro 12bit ADC je standardně 4095.</div>
       </div>
       <div class="row">
         <label>Výpočet teploty pro GUI/API</label>
@@ -1264,30 +1383,37 @@ void setup() {
           <option value="1h">Průměr 1 hodina</option>
           <option value="custom">Vlastní</option>
         </select>
+        <div class="muted">Volí, jaká hodnota teploty se zobrazuje v GUI a posílá do API/Zabbixu.</div>
       </div>
-      <div class="row">
+      <div class="row" id="customIntervalRow">
         <label>Vlastní interval (sekundy)</label>
         <input type="number" min="1" max="86400" step="1" name="tempAvgCustomSec">
+        <div class="muted">Použije se pouze při volbě „Vlastní“.</div>
       </div>
       <div class="row">
         <label>URL obrázků (GITHUB_BASE_URL)</label>
         <input type="text" name="memeBaseURL" style="width:100%;max-width:720px;">
+        <div class="muted">Base URL pro obrázky stavů (zima/horko/ok/error).</div>
       </div>
       <div class="row">
         <label>URL citací (CITACE_URL)</label>
         <input type="text" name="citaceURL" style="width:100%;max-width:720px;">
+        <div class="muted">Textový soubor s citacemi, jedna citace na řádek.</div>
       </div>
       <div class="row">
         <label>URL odpočtů (ODP_URL)</label>
         <input type="text" name="odpoctyURL" style="width:100%;max-width:720px;">
+        <div class="muted">JSON se seznamem odpočtů/událostí pro hlavní obrazovku.</div>
       </div>
       <div class="row">
         <label>Admin uživatel (Basic Auth)</label>
         <input type="text" name="adminUser" style="width:100%;max-width:320px;">
+        <div class="muted">Přihlašovací jméno pro změnu nastavení a OTA.</div>
       </div>
       <div class="row">
         <label>Admin heslo (Basic Auth)</label>
         <input type="text" name="adminPass" style="width:100%;max-width:320px;">
+        <div class="muted">Heslo pro změnu nastavení a OTA.</div>
       </div>
       <div class="ota-actions">
         <button type="submit">💾 Uložit změny</button>
@@ -1302,6 +1428,7 @@ void setup() {
       <div class="row">
         <label>Firmware soubor (.bin)</label>
         <input id="otaFile" type="file" name="update" accept=".bin" required>
+        <div class="muted">Nahrávej pouze firmware pro ESP32-C3 z této aplikace.</div>
       </div>
       <div class="ota-actions">
         <button id="otaBtn" type="submit">⬆️ Nahrát firmware</button>
@@ -1317,12 +1444,42 @@ void setup() {
 </div>
 <div id="toast" class="toast">Update úspěšný</div>
 <script>
+function setVisible(selector, visible){
+  const el = document.querySelector(selector);
+  if (!el) return;
+  el.style.display = visible ? "block" : "none";
+}
+
+function refreshConditionalRows(){
+  const sensorSel = document.querySelector('select[name="sensorType"]');
+  const avgSel = document.querySelector('select[name="tempAvgMode"]');
+  const isNTC = sensorSel && sensorSel.value === "ntc";
+  setVisible("#ntcConfig", isNTC);
+  setVisible("#ntcSeriesRow", isNTC);
+  setVisible("#ntcNominalRRow", isNTC);
+  setVisible("#ntcNominalTRow", isNTC);
+  setVisible("#ntcBRow", isNTC);
+  setVisible("#ntcVRefRow", isNTC);
+  setVisible("#ntcAdcMaxRow", isNTC);
+
+  const isCustomAvg = avgSel && avgSel.value === "custom";
+  setVisible("#customIntervalRow", isCustomAvg);
+}
+
 fetch('/api/config').then(r => r.json()).then(cfg => {
-  for (let k in cfg) if(document.forms[0][k]) document.forms[0][k].value = cfg[k];
-}).catch(() => {});
+  for (let k in cfg) if (document.forms[0][k]) document.forms[0][k].value = cfg[k];
+  refreshConditionalRows();
+}).catch(() => {
+  refreshConditionalRows();
+});
 fetch('/api/status').then(r => r.json()).then(s => {
   if (s && s.version) document.getElementById('fwVersion').textContent = s.version;
 }).catch(() => {});
+
+const sensorSelect = document.querySelector('select[name="sensorType"]');
+if (sensorSelect) sensorSelect.addEventListener("change", refreshConditionalRows);
+const avgModeSelect = document.querySelector('select[name="tempAvgMode"]');
+if (avgModeSelect) avgModeSelect.addEventListener("change", refreshConditionalRows);
 
 document.getElementById("settingsForm").addEventListener("submit", function(e){
   e.preventDefault();
